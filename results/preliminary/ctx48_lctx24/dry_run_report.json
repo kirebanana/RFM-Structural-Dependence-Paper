@@ -1,0 +1,39 @@
+{
+  "seeds": [
+    101,
+    202,
+    303
+  ],
+  "ctx": 48,
+  "base_feat_counts": 152949,
+  "base_nbr_counts": 119253,
+  "per_seed": {
+    "101": {
+      "eligible": 6766,
+      "changed": 4136,
+      "singleton_eligible": 2112,
+      "raw_coverage": 0.6112917528820574,
+      "rewirable_coverage": 0.8886978942844864,
+      "unrewirable_strata": 0,
+      "invariant_errors": []
+    },
+    "202": {
+      "eligible": 6766,
+      "changed": 4136,
+      "singleton_eligible": 2112,
+      "raw_coverage": 0.6112917528820574,
+      "rewirable_coverage": 0.8886978942844864,
+      "unrewirable_strata": 0,
+      "invariant_errors": []
+    },
+    "303": {
+      "eligible": 6766,
+      "changed": 4136,
+      "singleton_eligible": 2112,
+      "raw_coverage": 0.6112917528820574,
+      "rewirable_coverage": 0.8886978942844864,
+      "unrewirable_strata": 0,
+      "invariant_errors": []
+    }
+  }
+}

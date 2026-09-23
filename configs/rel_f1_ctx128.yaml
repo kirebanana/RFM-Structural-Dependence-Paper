@@ -1,0 +1,9 @@
+dataset: rel-f1
+task: driver-dnf
+context_size: 128
+local_context_size: 64
+seeds: [101, 202, 303]
+items_per_task: 702
+shuffle_seed: 0
+embedding_model: all-MiniLM-L12-v2
+checkpoint: stanford-star/rt-plurel/classification

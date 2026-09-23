@@ -1,0 +1,44 @@
+__pycache__
+.ipynb_checkpoints
+.pixi
+*.egg-info
+/wandb
+.vscode
+ckpts
+logs
+figures
+wandb
+trace
+/target/
+pixi.lock
+rdblearn
+
+scripts/synthetic/*
+.claude/
+
+# internal-only files, not part of the public release
+CLAUDE.md
+internal/
+scripts/eval_scaling.py
+scripts/eval_scaling_sharded.py
+scripts/scaling_reduce.py
+scripts/scaling_shard_merge.py
+scripts/enscurve_plot.py
+scripts/release_checkpoints.py
+
+*.npz
+tea_debug.log
+scratch_logs/
+
+# byod example: the dummy-DB generator is a local-only helper; the committed
+# mini-shop.duckdb it produces is what the notebook uses.
+examples/byod/make_duckdb.py
+
+# inference example: everything it writes (labels, dataset, preprocessed tensors)
+examples/inference/out/
+
+# local-only build/publish helpers + staged dist artifacts (not committed)
+local/
+
+# maturin develop builds the extension in-place into the source tree
+src/rt/_rustler*.so

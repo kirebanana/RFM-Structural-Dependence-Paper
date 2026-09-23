@@ -1,0 +1,65 @@
+{
+  "db_name": "rel-f1",
+  "task_table": "driver-dnf",
+  "ctx": 128,
+  "local_ctx": 64,
+  "seeds": [
+    101,
+    202,
+    303
+  ],
+  "checkpoint": "stanford-star/rt-plurel/classification",
+  "pre_dir": "historical source artifact preserved in the research archive",
+  "items_per_task": 702,
+  "n_unique_nodes": 702,
+  "auroc": {
+    "base": 0.6868833260137608,
+    "rw101": 0.6216756941394622,
+    "rw202": 0.6249597423510467,
+    "rw303": 0.6271800126872591
+  },
+  "seed_stats": {
+    "101": {
+      "singleton_eligible": 1422,
+      "eligible": 20294,
+      "changed": 15163,
+      "unrewirable_strata": 0
+    },
+    "202": {
+      "singleton_eligible": 1422,
+      "eligible": 20294,
+      "changed": 15163,
+      "unrewirable_strata": 0
+    },
+    "303": {
+      "singleton_eligible": 1422,
+      "eligible": 20294,
+      "changed": 15163,
+      "unrewirable_strata": 0
+    }
+  },
+  "elapsed_sec": 2031.441569328308,
+  "coverage": {
+    "101": {
+      "eligible": 20294,
+      "changed": 15163,
+      "singleton_eligible": 1422,
+      "raw_coverage": 0.7471666502414507,
+      "rewirable_coverage": 0.803465451462484
+    },
+    "202": {
+      "eligible": 20294,
+      "changed": 15163,
+      "singleton_eligible": 1422,
+      "raw_coverage": 0.7471666502414507,
+      "rewirable_coverage": 0.803465451462484
+    },
+    "303": {
+      "eligible": 20294,
+      "changed": 15163,
+      "singleton_eligible": 1422,
+      "raw_coverage": 0.7471666502414507,
+      "rewirable_coverage": 0.803465451462484
+    }
+  }
+}
