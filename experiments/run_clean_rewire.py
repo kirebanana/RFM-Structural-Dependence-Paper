@@ -1,10 +1,20 @@
-"""Clean RT-PluRel structural-rewiring experiment (rel-f1 / driver-dnf).
+"""Run the RT-PluRel FK-parent rewiring experiment on ``rel-f1/driver-dnf``.
 
-One evaluator per context config; one `evaluate_raw` call with four
-net-wrappers sharing a single loaded RT model: base + 3 rewire seeds. The
-rewire wrappers clone the batch, permute `f2p_nbr_idxs` within each
-(query, relation) stratum (see experiments/clean_rewire.py), and assert the
-batch-equality + structural invariants before the forward pass.
+For one requested context configuration, this script evaluates four arms in a
+single ``Evaluator.evaluate_raw`` call: the unmodified batch plus one rewired
+batch for each seed. All arms share one frozen, loaded RT-PluRel model. The
+rewiring implementation lives in :mod:`rfm_structure.rewiring`, not in this
+directory.
+
+In full mode, ``RewireWrap`` clones an evaluator batch and changes only
+``f2p_nbr_idxs``. It checks that every other tensor matches the base batch before
+calling RT. In ``--dry-run`` mode, the script instead rewires the first sampled
+batch, runs ``assert_structural_invariants``, and writes a report without loading
+the model or performing a forward pass.
+
+The input is a locally preprocessed RT artifact made by ``scripts/preprocess.sh``.
+Generated outputs are written below ``results/runs/`` by default and are ignored
+by Git.
 
 Usage:
   python experiments/run_clean_rewire.py --ctx 48 --local-ctx 24 --dry-run \
@@ -45,11 +55,20 @@ BASE_TENSORS = (
 
 
 class _Captured:
-    pass
+    """Mutable holder shared by the base and rewired model wrappers.
+
+    ``BaseWrap`` stores a CPU clone of its first batch here. ``RewireWrap`` uses
+    that clone as the reference for its full-mode equality gate.
+    """
 
 
 class BaseWrap(torch.nn.Module):
-    """Passes the batch through unchanged; captures it once for the gate."""
+    """Evaluator-compatible wrapper for the unmodified control arm.
+
+    The wrapper forwards batches to ``inner`` unchanged. On its first call it
+    retains a CPU clone in ``holder.batch`` so rewired arms can assert that their
+    non-structural inputs are unchanged.
+    """
 
     def __init__(self, inner, holder):
         super().__init__()
@@ -57,6 +76,7 @@ class BaseWrap(torch.nn.Module):
         self.holder = holder
 
     def predict(self, batch, eval_ctx_sizes, device, task, bool_as_num):
+        """Capture the first control batch, then delegate to RT prediction."""
         if self.holder.batch is None:
             self.holder.batch = {
                 k: (v.cpu().clone() if isinstance(v, torch.Tensor) else v)
@@ -66,6 +86,13 @@ class BaseWrap(torch.nn.Module):
 
 
 class RewireWrap(torch.nn.Module):
+    """Evaluator-compatible RT wrapper for one seeded structural intervention.
+
+    ``seed`` selects one deterministic parent assignment. ``stats`` is mutated
+    by :func:`rfm_structure.rewiring.rewire_f2p_nbr` and later becomes the
+    aggregate edge-coverage section of the run manifest.
+    """
+
     def __init__(self, inner, seed, holder, stats):
         super().__init__()
         self.inner = inner
@@ -74,6 +101,13 @@ class RewireWrap(torch.nn.Module):
         self.stats = stats
 
     def predict(self, batch, eval_ctx_sizes, device, task, bool_as_num):
+        """Clone ``batch``, rewire only its FK parent IDs, and call RT.
+
+        The equality gate excludes ``f2p_nbr_idxs`` because that is the intended
+        intervention and ``batch_mask`` because it is evaluator bookkeeping.
+        This method does not call the more expensive structural-invariant checker;
+        that check is performed by :func:`dry_run`.
+        """
         # Batch-equality gate: every tensor except f2p_nbr_idxs must equal base.
         base = self.holder.batch
         if base is not None:
@@ -95,6 +129,15 @@ class RewireWrap(torch.nn.Module):
 
 
 def build_tasks(pre_dir):
+    """Load the configured RelBench test task from a preprocessed RT artifact.
+
+    Args:
+        pre_dir: Directory produced by the vendored RT preprocessing command.
+
+    Returns:
+        The nonempty list of ``driver-dnf`` test tasks for the fixed ``rel-f1``
+        database.
+    """
     tasks = [
         t for t in tasks_from_preprocessed(pre_dir, splits=("test",), dbs=[DB_NAME])
         if t.table_name == TASK_TABLE
@@ -104,12 +147,23 @@ def build_tasks(pre_dir):
 
 
 def dry_run(ev, pre_dir, seeds, out_dir):
+    """Validate rewiring on the evaluator's first batch without RT inference.
+
+    The function saves the raw batch as ``base_context.pt``, computes aggregate
+    feature/neighbor attention counts, applies every requested seeded rewire,
+    and writes ``dry_run_report.json``. It returns ``0`` only when every
+    invariant check passes and every seed changes at least 80% of its rewirable
+    (non-singleton) edge instances.
+
+    ``pre_dir`` is accepted for parity with :func:`run` but is not read directly;
+    the already constructed evaluator owns the preprocessed input.
+    """
     task = ev.tasks[0]
     loader = ev.eval_loaders[task]
     batch = next(iter(loader))
     report = {"seeds": [int(s) for s in seeds], "ctx": ev.ctx_sizes[0]}
 
-    # capture base context (raw processed batch) for reproducibility
+    # Preserve the exact sampled batch inspected by this dry-run.
     cap = {k: (v.cpu().clone() if isinstance(v, torch.Tensor) else v) for k, v in batch.items()}
     torch.save(cap, os.path.join(out_dir, "base_context.pt"))
 
@@ -168,6 +222,24 @@ def dry_run(ev, pre_dir, seeds, out_dir):
 
 
 def run(ev, pre_dir, seeds, out_dir, device, local_ctx):
+    """Evaluate base and seeded rewired arms with one shared RT-PluRel model.
+
+    The evaluator yields predictions for the same test targets under a control
+    wrapper and one rewired wrapper per seed. This function concatenates those
+    predictions, verifies the expected 702 unique target node IDs, computes
+    AUROC from raw logits, and writes one NPZ archive per arm plus a manifest.
+
+    Args:
+        ev: Vendored RT evaluator configured by :func:`main`.
+        pre_dir: Recorded verbatim in the output manifest for provenance.
+        seeds: Integer rewiring seeds, each defining one experimental arm.
+        out_dir: Existing directory for generated NPZ and JSON files.
+        device: ``"cuda"`` when available, otherwise ``"cpu"``.
+        local_ctx: Local-context size recorded in the manifest.
+
+    Returns:
+        The manifest dictionary after it has been written to disk.
+    """
     from sklearn.metrics import roc_auc_score
 
     holder = _Captured()
@@ -272,6 +344,13 @@ def run(ev, pre_dir, seeds, out_dir, device, local_ctx):
 
 
 def main():
+    """Parse CLI options, construct the evaluator, then run validation or RT.
+
+    ``--ctx`` and ``--local-ctx`` select the sampled-context configuration.
+    ``--pre-dir`` must point at locally generated RT artifacts. ``--dry-run``
+    validates one sampled batch without loading the checkpoint; omitting it runs
+    full base-plus-rewired inference and writes results below ``--out-root``.
+    """
     ap = argparse.ArgumentParser()
     ap.add_argument("--ctx", type=int, required=True)
     ap.add_argument("--local-ctx", type=int, required=True)

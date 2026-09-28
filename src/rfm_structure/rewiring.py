@@ -1,17 +1,16 @@
-"""Clean structure-preserving FK rewiring for RT-PluRel rel-f1 eval.
+"""Pure NumPy/SciPy FK-parent rewiring for sampled RT contexts.
 
-Pure functions only (numpy + scipy). No torch, no rt import, so this module
-is unit-testable without GPU. The rewiring permutes the *parent* node indices
-of foreign-key links *within* each (query context b, relation id r) stratum:
+RT batches represent up to ``MAX_F2P_NBRS`` foreign-key parent links for each
+sampled cell. ``f2p_nbr_idxs[b, s, k]`` is the parent node ID assigned to FK
+slot ``k`` of sequence position ``s``; ``-1`` means no in-context parent.
+``f2p_rel_idxs`` identifies which FK relation produced the matching slot.
 
-  * slot count per (source row, relation) is preserved  -> source degree kept
-  * the multiset of present parent node ids per relation is preserved
-    -> every node's in-degree (how many rows point at it) is preserved
-    -> RT's feat/nbr attention true-counts are preserved
-  * no self-link is ever created
-  * absent (-1 / out-of-context) slots are copied byte-for-byte
-
-`f2p_rel_idxs` is NOT modified; only `f2p_nbr_idxs` values are permuted.
+The intervention changes only parent IDs. For each ``(sequence b, relation r)``
+stratum it treats the original parent occurrences as a pool, then finds a
+one-to-one reassignment that forbids self-links and prefers a changed parent.
+This preserves source slots, relation IDs, absent slots, and the parent-instance
+multiset within the stratum by construction. The module deliberately has no
+Torch or RT dependency so its algorithm can be unit-tested without a model.
 """
 
 from collections import defaultdict
@@ -23,6 +22,7 @@ MAX_F2P_NBRS = 5
 
 
 def _present_nodes(node_idxs_b, pad_b):
+    """Return node IDs at non-padding positions of one sampled sequence."""
     return {int(x) for x in node_idxs_b[~pad_b].tolist()}
 
 
@@ -37,15 +37,30 @@ def _cells_by_source(node_idxs_b, pad_b, s_max):
 
 
 def rewire_f2p_nbr(nbr, rel, node_idxs, is_padding, seed, stats=None, registry=None):
-    """Return a copy of ``nbr`` with eligible FK parents rewired.
+    """Return a copy of ``nbr`` with eligible parent identities reassigned.
 
-    nbr, rel  : int64 arrays (B, S, F)
-    node_idxs : int64 array (B, S)
-    is_padding: bool array (B, S)
-    seed      : int rewire seed
-    stats     : optional dict to accumulate edge-instance counts and failures
-    registry  : optional relation_index dict (relation_id str -> metadata); only
-                used for the parent-table sanity assertion in tests.
+    An eligible edge is one ``(b, relation, source-node, FK-slot)`` tuple whose
+    parent ID is nonnegative and present in the same sampled sequence. Each
+    multi-edge ``(b, relation)`` stratum receives a seeded minimum-cost matching
+    over its original parent *instances*. Candidate self-links are forbidden;
+    retaining the original parent is allowed but penalized. Singleton strata are
+    counted but retained because there is nothing to permute.
+
+    Args:
+        nbr: Integer parent-ID tensor with shape ``(B, S, F)``.
+        rel: Integer relation-ID tensor parallel to ``nbr`` with shape
+            ``(B, S, F)``. It is never modified.
+        node_idxs: Sampled node IDs with shape ``(B, S)``.
+        is_padding: Boolean mask with shape ``(B, S)``; ``True`` means padding.
+        seed: Integer seed for the deterministic NumPy PCG64 permutation.
+        stats: Optional mutable dictionary receiving aggregate
+            ``eligible_edges``, ``changed_edges``, ``singleton_edges``, and
+            ``unrewirable_strata`` counts.
+        registry: Reserved relation metadata argument. It is not currently used
+            by the algorithm or its checks.
+
+    Returns:
+        A copy of ``nbr``. The input array is never mutated.
     """
     nbr = nbr.copy()
     B, S, F = nbr.shape
@@ -158,7 +173,11 @@ def rewire_f2p_nbr(nbr, rel, node_idxs, is_padding, seed, stats=None, registry=N
 
 
 def effective_parent_set_sizes(nbr, node_idxs, is_padding):
-    """Per-cell count of DISTINCT present parents (excluding the cell's own node)."""
+    """Return each cell's count of distinct present, non-self parent IDs.
+
+    The result has shape ``(B, S)``. Padding positions remain zero. This is a
+    structural summary used by :func:`assert_structural_invariants`.
+    """
     B, S, F = nbr.shape
     out = np.zeros((B, S), dtype=np.int64)
     for b in range(B):
@@ -178,10 +197,13 @@ def effective_parent_set_sizes(nbr, node_idxs, is_padding):
 
 
 def attn_true_counts(node_idxs, nbr, is_padding):
-    """Total feat / nbr attention true-counts, replicating rt.model mask logic.
+    """Return aggregate RT feature and neighbor attention true-counts.
 
-    feat query i includes kv j when same_node(i,j) or node_idxs[j] in f2p_nbr_idxs[i].
-    nbr  query i includes kv j when f2p_nbr_idxs[j] contains node_idxs[i].
+    For a feature query ``i``, key/value ``j`` is counted when it is the same
+    node or ``j`` is one of ``i``'s FK parents. For a neighbor query ``i``,
+    ``j`` is counted when ``j`` references ``i``. The result is ``(feat_total,
+    nbr_total)`` over all non-padding positions, not a per-token mask equality
+    check.
     """
     B = nbr.shape[0]
     feat_total = 0
@@ -208,7 +230,17 @@ def attn_true_counts(node_idxs, nbr, is_padding):
 
 
 def assert_structural_invariants(base_nbr, new_nbr, rel, node_idxs, is_padding, registry=None):
-    """Return a list of error strings (empty == all invariants hold)."""
+    """Compare a base and rewired parent tensor and return invariant failures.
+
+    Checks the present/absent slot pattern, rewired self-links, parent multisets
+    grouped by relation, per-cell distinct-parent counts, and aggregate RT
+    feature/neighbor attention counts. An empty list means every implemented
+    check passed. ``registry`` is reserved and not currently used.
+
+    Note: the current parent-multiset implementation passes an inverted padding
+    mask to its present-node helper, so it is not a reliable independent check
+    for padded sequences. Rewiring still preserves the multiset by construction.
+    """
     errs = []
     B = base_nbr.shape[0]
 
@@ -270,11 +302,12 @@ def assert_structural_invariants(base_nbr, new_nbr, rel, node_idxs, is_padding, 
 
 
 def _self_test():
-    """Synthetic check that rewiring preserves every invariant.
+    """Run a synthetic all-unpadded rewiring fixture used by unit tests.
 
     Uses two relations with DISJOINT parent pools (mirroring real data where
     different FK columns point to different tables / disjoint id ranges), so a
-    node never receives the same parent id from two relations.
+    node never receives the same parent ID from two relations. It does not cover
+    padding, real evaluator batches, or RT inference.
     """
     B, S, F = 2, 6, 3
     # child rows 0..2 have FK; rows 3..5 are pure parent rows (pool B)

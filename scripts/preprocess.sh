@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Convert a local raw rel-f1 dataset into the RT artifact required by
+# experiments/run_clean_rewire.py. The generated artifact is intentionally
+# ignored because it includes serialized data and embedding resources.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Create the locked Python 3.12 environment and build the editable RT/Rustler
+# dependency. PYO3_PYTHON keeps Rustler bound to the same managed interpreter.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

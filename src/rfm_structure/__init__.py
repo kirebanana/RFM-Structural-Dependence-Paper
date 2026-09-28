@@ -1,4 +1,4 @@
-"""Utilities for measuring structural dependence in relational models."""
+"""Public helpers for sampled-context structural-reliance experiments."""
 
 from .metrics import binary_auroc
 from .rewiring import (
