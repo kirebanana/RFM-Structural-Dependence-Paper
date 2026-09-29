@@ -1,16 +1,14 @@
-"""Small, validation-first metrics used by structural experiments."""
+"""AUROC helper for binary prediction scores."""
 
 import numpy as np
 from sklearn.metrics import roc_auc_score
 
 
 def binary_auroc(labels: np.ndarray, scores: np.ndarray) -> float:
-    """Compute binary AUROC from labels and finite raw model scores.
+    """Score raw logits (or probabilities), treating labels > 0 as positive.
 
-    Labels greater than zero are treated as the positive class. ``scores`` may
-    be logits because AUROC depends on ranking, so applying sigmoid would not
-    change the result. Raises ``ValueError`` for mismatched shapes or non-finite
-    scores; scikit-learn raises if the labels do not contain both classes.
+    Validates equal shapes and finite scores. AUROC depends on score order, so
+    applying sigmoid to logits is unnecessary.
     """
     labels = np.asarray(labels)
     scores = np.asarray(scores)

@@ -1,29 +1,20 @@
 # Measuring Structural Reliance in Relational Foundation Models
 
-## Project
-
-This project studies how strongly a pretrained Relational Foundation Model
-depends on truthful **instance-level PK/FK connectivity**. The comparison holds
-the sampled RT input as fixed as the current implementation permits:
+This project asks how much a pretrained Relational Transformer (RT-PluRel)
+relies on the correct parent rows behind foreign-key links. For each prediction
+query, it compares two versions of the same sampled context:
 
 ```text
-same sampled information, model, target, values, labels, and timestamps
-different concrete PK/FK parent identities
+same query, sampled cells, values, labels, timestamps, and frozen model
+                 clean FK parent links
+                          vs
+                rewired FK parent links
 ```
 
-We compare `f(X, M_correct)` with `f(X, M_rewired)`, where `X` is the sampled
-content and `M` is the concrete relational connectivity available to RT. The
-intervention operates on the sampled RT context; it is not a claim to construct
-a globally valid counterfactual database.
-
-## Model and Benchmark
-
-- Frozen RT-PluRel inference on RelBench.
-- Current pilot: `rel-f1 / driver-dnf`.
-- Historical checkpoint: `stanford-star/rt-plurel/classification`, the newer
-  approximately 85.6M-parameter classifier generation. The historical Hub
-  revision was not recorded.
-- Controlled, non-adversarial structural perturbation of sampled FK parents.
+Only the concrete FK parent identities in the sampled RT input are reassigned;
+this is not a database-wide rewrite. The current pilot uses the frozen
+`stanford-star/rt-plurel/classification` checkpoint on the RelBench
+`rel-f1 / driver-dnf` task. Rewiring is controlled and non-adversarial.
 
 ## Research Questions
 
@@ -33,7 +24,7 @@ sensitive are RT-PluRel's predictions to corruption of concrete PK/FK identities
 **RQ2.** How does this structural reliance change as relational context and
 structural exposure increase?
 
-## Preliminary Evidence
+## Preliminary results
 
 The historical pilot evaluated 702 aligned `rel-f1 / driver-dnf` test queries
 with three rewiring seeds:
@@ -43,32 +34,20 @@ with three rewiring seeds:
 | 48 (local 24) | 0.6150 | ~0.6042 | ~0.0108 |
 | 128 (local 64) | 0.6869 | ~0.6246 | ~0.0623 |
 
-These are preliminary, single-task findings. The 48-versus-128 comparison does
-not establish that larger context causally increases structural reliance:
-context construction and structural exposure also differ. The retained
-prediction arrays and manifests are under `results/preliminary/`.
+These are **historical, preliminary** results, not new inference with the
+current local validation code. The context comparison is descriptive: context
+construction and exposure differ too. Saved predictions and manifests are in
+`results/preliminary/`.
 
-## Prior Work
-
-Integrity-constrained PK/FK rewiring was already studied for task-trained
-relational GNNs by Gany, Cautis, and Maniu, *Structural Adversarial Attacks on
-Relational Deep Learning under Integrity Constraints* (2026). This project does
-not claim valid FK rewiring itself is novel. Its focus is controlled,
-non-adversarial characterization of structural reliance in a pretrained
-Relational Transformer, including context and exposure analysis.
-
-## Repository Layout
+## Repository layout
 
 ```text
-src/          structural intervention and analysis code
-experiments/  experiment runners
-configs/      experiment configurations
-tests/        invariant and unit tests
-results/      preserved preliminary results
-vendor/       pinned relational-transformer source
-scripts/      setup and preprocessing helpers
+src/rfm_structure/  rewiring, validation, and exposure helpers
+experiments/        experiment runner
+tests/              first-party tests
+scripts/            setup and preprocessing
+vendor/             pinned Stanford RT with local relation-metadata patches
+results/            saved preliminary outputs
 ```
 
-## Status
-
-This is an ongoing university research project. Current results are preliminary.
+This is an ongoing university research project.

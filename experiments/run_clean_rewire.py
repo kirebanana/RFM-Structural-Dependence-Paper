@@ -1,20 +1,13 @@
-"""Run the RT-PluRel FK-parent rewiring experiment on ``rel-f1/driver-dnf``.
+"""Compare clean and rewired FK links on RelBench ``rel-f1/driver-dnf``.
 
-For one requested context configuration, this script evaluates four arms in a
-single ``Evaluator.evaluate_raw`` call: the unmodified batch plus one rewired
-batch for each seed. All arms share one frozen, loaded RT-PluRel model. The
-rewiring implementation lives in :mod:`rfm_structure.rewiring`, not in this
-directory.
+Each evaluator batch contains one sampled context per prediction query. The
+clean arm and three seeded rewired arms share a single frozen RT-PluRel model;
+only the FK parent IDs differ. The rewiring algorithm and its checks live in
+``rfm_structure.rewiring``. Input comes from ``scripts/preprocess.sh`` and
+generated outputs go under ``results/runs/`` by default.
 
-In full mode, ``RewireWrap`` clones an evaluator batch and changes only
-``f2p_nbr_idxs``. It checks that every other tensor matches the base batch before
-calling RT. In ``--dry-run`` mode, the script instead rewires the first sampled
-batch, runs ``assert_structural_invariants``, and writes a report without loading
-the model or performing a forward pass.
-
-The input is a locally preprocessed RT artifact made by ``scripts/preprocess.sh``.
-Generated outputs are written below ``results/runs/`` by default and are ignored
-by Git.
+``--dry-run`` validates only the first evaluator batch without model inference.
+It does not establish that all prediction queries have been checked.
 
 Usage:
   python experiments/run_clean_rewire.py --ctx 48 --local-ctx 24 --dry-run \
@@ -35,10 +28,12 @@ from rt import RelationalTransformer
 from rt.eval_utils import build_evaluator
 from rt.tasks import tasks_from_preprocessed
 
+from rfm_structure.data import load_relation_index
 from rfm_structure.rewiring import (
     assert_structural_invariants,
     attn_true_counts,
     rewire_f2p_nbr,
+    summarize_query_exposure,
 )
 
 CKPT = "stanford-star/rt-plurel/classification"
@@ -46,29 +41,13 @@ DB_NAME = "rel-f1"
 TASK_TABLE = "driver-dnf"
 ITEMS_PER_TASK = 702
 
-BASE_TENSORS = (
-    "node_idxs", "table_name_idxs", "col_name_idxs", "class_value_idxs",
-    "sem_types", "number_values", "text_values", "datetime_values",
-    "boolean_values", "col_name_values", "timestamps", "seed_node_idxs",
-    "bfs_depths", "is_targets", "is_task_nodes", "is_padding", "f2p_rel_idxs",
-)
-
 
 class _Captured:
-    """Mutable holder shared by the base and rewired model wrappers.
-
-    ``BaseWrap`` stores a CPU clone of its first batch here. ``RewireWrap`` uses
-    that clone as the reference for its full-mode equality gate.
-    """
+    """Share the current clean batch between model wrappers."""
 
 
 class BaseWrap(torch.nn.Module):
-    """Evaluator-compatible wrapper for the unmodified control arm.
-
-    The wrapper forwards batches to ``inner`` unchanged. On its first call it
-    retains a CPU clone in ``holder.batch`` so rewired arms can assert that their
-    non-structural inputs are unchanged.
-    """
+    """Run the clean arm and capture each batch for comparison with rewired arms."""
 
     def __init__(self, inner, holder):
         super().__init__()
@@ -76,21 +55,19 @@ class BaseWrap(torch.nn.Module):
         self.holder = holder
 
     def predict(self, batch, eval_ctx_sizes, device, task, bool_as_num):
-        """Capture the first control batch, then delegate to RT prediction."""
-        if self.holder.batch is None:
-            self.holder.batch = {
-                k: (v.cpu().clone() if isinstance(v, torch.Tensor) else v)
-                for k, v in batch.items()
-            }
+        """Capture the current control batch, then delegate to RT prediction."""
+        self.holder.batch = {
+            k: (v.cpu().clone() if isinstance(v, torch.Tensor) else v)
+            for k, v in batch.items()
+        }
         return self.inner.predict(batch, eval_ctx_sizes, device, task, bool_as_num)
 
 
 class RewireWrap(torch.nn.Module):
-    """Evaluator-compatible RT wrapper for one seeded structural intervention.
+    """Check and run one seeded FK-parent rewiring arm on the shared RT model.
 
-    ``seed`` selects one deterministic parent assignment. ``stats`` is mutated
-    by :func:`rfm_structure.rewiring.rewire_f2p_nbr` and later becomes the
-    aggregate edge-coverage section of the run manifest.
+    ``stats`` accumulates eligible/changed edge instances across batches;
+    ``exposure_batches`` retains the corresponding per-query relation counts.
     """
 
     def __init__(self, inner, seed, holder, stats):
@@ -99,45 +76,66 @@ class RewireWrap(torch.nn.Module):
         self.seed = seed
         self.holder = holder
         self.stats = stats
+        self.exposure_batches = []
 
     def predict(self, batch, eval_ctx_sizes, device, task, bool_as_num):
-        """Clone ``batch``, rewire only its FK parent IDs, and call RT.
-
-        The equality gate excludes ``f2p_nbr_idxs`` because that is the intended
-        intervention and ``batch_mask`` because it is evaluator bookkeeping.
-        This method does not call the more expensive structural-invariant checker;
-        that check is performed by :func:`dry_run`.
-        """
-        # Batch-equality gate: every tensor except f2p_nbr_idxs must equal base.
+        """Verify held-fixed inputs, validate rewiring, then predict."""
+        # The evaluator calls the clean arm first for this same sampled batch.
         base = self.holder.batch
-        if base is not None:
-            for k in batch:
-                if k in ("f2p_nbr_idxs", "batch_mask"):
-                    continue
-                if isinstance(batch[k], torch.Tensor):
-                    assert torch.equal(
-                        batch[k].cpu(), base[k].cpu()
-                    ), f"batch-equality gate failed on {k}"
+        assert base is not None, "rewire arm ran before the control arm"
+        assert set(batch) == set(base), "batch-equality gate found different keys"
+        for k in batch:
+            if k in ("f2p_nbr_idxs", "batch_mask"):
+                # FK parents are the intervention; batch_mask is evaluator metadata.
+                continue
+            if isinstance(batch[k], torch.Tensor):
+                assert torch.equal(
+                    batch[k].cpu(), base[k].cpu()
+                ), f"batch-equality gate failed on {k}"
+            else:
+                assert batch[k] == base[k], f"batch-equality gate failed on {k}"
         b = {k: (v.clone() if isinstance(v, torch.Tensor) else v) for k, v in batch.items()}
         nbr = b["f2p_nbr_idxs"].cpu().numpy().astype(np.int64)
         rel = b["f2p_rel_idxs"].cpu().numpy().astype(np.int64)
         nid = b["node_idxs"].cpu().numpy().astype(np.int64)
         pad = b["is_padding"].cpu().numpy()
-        new_nbr = rewire_f2p_nbr(nbr, rel, nid, pad, self.seed, stats=self.stats)
+        timestamps = b["timestamps"].cpu().numpy().astype(np.int64)
+        is_targets = b["is_targets"].cpu().numpy().astype(bool)
+        sequence_stats = []
+        new_nbr = rewire_f2p_nbr(
+            nbr,
+            rel,
+            nid,
+            pad,
+            self.seed,
+            stats=self.stats,
+            sequence_stats=sequence_stats,
+        )
+        errors = assert_structural_invariants(
+            nbr,
+            new_nbr,
+            rel,
+            nid,
+            pad,
+            timestamps=timestamps,
+            is_targets=is_targets,
+        )
+        assert not errors, f"structural invariant gate failed: {errors}"
+        self.exposure_batches.append(summarize_query_exposure(
+            nid,
+            rel,
+            pad,
+            is_targets,
+            b["col_name_idxs"].cpu().numpy(),
+            b["is_task_nodes"].cpu().numpy().astype(bool),
+            sequence_stats,
+        ))
         b["f2p_nbr_idxs"] = torch.from_numpy(new_nbr).to(b["f2p_nbr_idxs"].dtype)
         return self.inner.predict(b, eval_ctx_sizes, device, task, bool_as_num)
 
 
 def build_tasks(pre_dir):
-    """Load the configured RelBench test task from a preprocessed RT artifact.
-
-    Args:
-        pre_dir: Directory produced by the vendored RT preprocessing command.
-
-    Returns:
-        The nonempty list of ``driver-dnf`` test tasks for the fixed ``rel-f1``
-        database.
-    """
+    """Find the driver-DNF test task in the local preprocessed RT data."""
     tasks = [
         t for t in tasks_from_preprocessed(pre_dir, splits=("test",), dbs=[DB_NAME])
         if t.table_name == TASK_TABLE
@@ -147,16 +145,12 @@ def build_tasks(pre_dir):
 
 
 def dry_run(ev, pre_dir, seeds, out_dir):
-    """Validate rewiring on the evaluator's first batch without RT inference.
+    """Check the first sampled batch without loading the RT model.
 
-    The function saves the raw batch as ``base_context.pt``, computes aggregate
-    feature/neighbor attention counts, applies every requested seeded rewire,
-    and writes ``dry_run_report.json``. It returns ``0`` only when every
-    invariant check passes and every seed changes at least 80% of its rewirable
-    (non-singleton) edge instances.
-
-    ``pre_dir`` is accepted for parity with :func:`run` but is not read directly;
-    the already constructed evaluator owns the preprocessed input.
+    Saves that batch, per-seed query exposure, and a validation report. Returns
+    nonzero if a check fails or fewer than 80% of non-singleton eligible edges
+    change. This checks one batch, not every prediction query. ``pre_dir`` is
+    already used by the evaluator and is not read directly here.
     """
     task = ev.tasks[0]
     loader = ev.eval_loaders[task]
@@ -179,8 +173,35 @@ def dry_run(ev, pre_dir, seeds, out_dir):
     per_seed = {}
     for seed in seeds:
         stats = {}
-        new_nbr = rewire_f2p_nbr(nbr, rel, nid, pad, int(seed), stats=stats)
-        errs = assert_structural_invariants(nbr, new_nbr, rel, nid, pad)
+        sequence_stats = []
+        new_nbr = rewire_f2p_nbr(
+            nbr,
+            rel,
+            nid,
+            pad,
+            int(seed),
+            stats=stats,
+            sequence_stats=sequence_stats,
+        )
+        errs = assert_structural_invariants(
+            nbr,
+            new_nbr,
+            rel,
+            nid,
+            pad,
+            timestamps=cap["timestamps"].cpu().numpy().astype(np.int64),
+            is_targets=cap["is_targets"].cpu().numpy().astype(bool),
+        )
+        exposure = summarize_query_exposure(
+            nid,
+            rel,
+            pad,
+            cap["is_targets"].cpu().numpy().astype(bool),
+            cap["col_name_idxs"].cpu().numpy(),
+            cap["is_task_nodes"].cpu().numpy().astype(bool),
+            sequence_stats,
+        )
+        write_exposure_npz(os.path.join(out_dir, f"exposure_rw{seed}.npz"), [exposure])
         eligible_edges = stats["eligible_edges"]
         changed_edges = stats["changed_edges"]
         singleton_edges = stats.get("singleton_edges", 0)
@@ -205,7 +226,6 @@ def dry_run(ev, pre_dir, seeds, out_dir):
                 f"rewirable_edge_fraction={rewirable_fraction:.3f}",
                 flush=True,
             )
-        # sample map: first 5 rows of (b=0) f2p_nbr before/after for relation slots
     report["per_seed"] = per_seed
     with open(os.path.join(out_dir, "dry_run_report.json"), "w") as f:
         json.dump(report, f, indent=2)
@@ -221,24 +241,73 @@ def dry_run(ev, pre_dir, seeds, out_dir):
     return 0
 
 
+def write_exposure_npz(path, batches):
+    """Save per-query FK counts and flattened per-relation counts as NPZ.
+
+    Each batch uses local row indices. Exclude rows without one target, append
+    the remaining queries in evaluation order, and remap relation rows to their
+    index in the saved query arrays. ``changed_edge_fractions`` divides changed
+    by eligible FK edge instances; it is zero when none are eligible.
+    """
+    query_fields = (
+        "target_node_idxs",
+        "context_token_counts",
+        "eligible_edges",
+        "changed_edges",
+        "singleton_edges",
+        "unrewirable_edges",
+        "unrewirable_strata",
+        "unique_parent_nodes",
+        "labeled_support_counts",
+    )
+    query_values = {field: [] for field in query_fields}
+    relation_values = {
+        "relation_query_indices": [],
+        "relation_ids": [],
+        "relation_eligible_edges": [],
+        "relation_changed_edges": [],
+        "relation_singleton_edges": [],
+        "relation_unrewirable_edges": [],
+        "relation_unrewirable_strata": [],
+    }
+    query_offset = 0
+    for batch in batches:
+        query_mask = batch["is_prediction_query"]
+        remap = np.full(len(query_mask), -1, dtype=np.int64)
+        remap[query_mask] = np.arange(query_mask.sum(), dtype=np.int64) + query_offset
+        for field in query_fields:
+            query_values[field].append(batch[field][query_mask])
+        relation_mask = query_mask[batch["relation_query_indices"]]
+        relation_values["relation_query_indices"].append(
+            remap[batch["relation_query_indices"][relation_mask]]
+        )
+        for field in tuple(relation_values)[1:]:
+            relation_values[field].append(batch[field][relation_mask])
+        query_offset += int(query_mask.sum())
+    arrays = {
+        field: np.concatenate(values) if values else np.array([], dtype=np.int64)
+        for field, values in query_values.items()
+    }
+    arrays["changed_edge_fractions"] = np.divide(
+        arrays["changed_edges"],
+        arrays["eligible_edges"],
+        out=np.zeros(len(arrays["eligible_edges"]), dtype=float),
+        where=arrays["eligible_edges"] != 0,
+    )
+    arrays.update({
+        field: np.concatenate(values) if values else np.array([], dtype=np.int64)
+        for field, values in relation_values.items()
+    })
+    np.savez(path, **arrays)
+    return arrays
+
+
 def run(ev, pre_dir, seeds, out_dir, device, local_ctx):
-    """Evaluate base and seeded rewired arms with one shared RT-PluRel model.
+    """Evaluate clean and rewired arms, then save aligned predictions and exposure.
 
-    The evaluator yields predictions for the same test targets under a control
-    wrapper and one rewired wrapper per seed. This function concatenates those
-    predictions, verifies the expected 702 unique target node IDs, computes
-    AUROC from raw logits, and writes one NPZ archive per arm plus a manifest.
-
-    Args:
-        ev: Vendored RT evaluator configured by :func:`main`.
-        pre_dir: Recorded verbatim in the output manifest for provenance.
-        seeds: Integer rewiring seeds, each defining one experimental arm.
-        out_dir: Existing directory for generated NPZ and JSON files.
-        device: ``"cuda"`` when available, otherwise ``"cpu"``.
-        local_ctx: Local-context size recorded in the manifest.
-
-    Returns:
-        The manifest dictionary after it has been written to disk.
+    One evaluator pass uses the same sampled contexts and RT model for every
+    arm. The saved NPZ files hold labels, raw scores, and target row IDs; the
+    manifest records AUROC, aggregate edge counts, and FK relation metadata.
     """
     from sklearn.metrics import roc_auc_score
 
@@ -252,7 +321,7 @@ def run(ev, pre_dir, seeds, out_dir, device, local_ctx):
         seed_stats[int(s)] = st
         wrappers.append((f"rw{int(s)}", RewireWrap(None, int(s), holder, st)))
 
-    # load model once, share across all wrappers
+    # Sharing weights makes parent identity the only intended model input change.
     model = RelationalTransformer.from_pretrained(
         CKPT, device=device
     )
@@ -282,15 +351,20 @@ def run(ev, pre_dir, seeds, out_dir, device, local_ctx):
     preds_all = {p: np.concatenate(v) for p, v in preds_acc.items()}
     node_idxs_all = np.concatenate(nid_acc)
 
-    # scoring gate
+    for prefix, wrapper in wrappers[1:]:
+        exposure_path = os.path.join(out_dir, f"exposure_{prefix}.npz")
+        exposure = write_exposure_npz(exposure_path, wrapper.exposure_batches)
+        assert np.array_equal(exposure["target_node_idxs"], node_idxs_all), (
+            f"{prefix}: exposure rows do not align with evaluator predictions"
+        )
+
+    # Raw logits and sigmoid probabilities have the same AUROC ranking.
     n_unique = len(np.unique(node_idxs_all))
     assert n_unique == ITEMS_PER_TASK, f"expected 702 unique nodes, got {n_unique}"
     auroc = {}
     for p, labels in labels_all.items():
         lab = labels.astype(float)
         pr = preds_all[p].astype(float)
-        # clf with bool_as_num emits raw logits; AUROC is rank-invariant to the
-        # sigmoid, so score on raw scores (matches rt.eval_utils._score).
         assert np.all(np.isfinite(pr)), f"{p}: non-finite predictions"
         lab_bin = (lab > 0).astype(int)
         auroc[p] = float(roc_auc_score(lab_bin, pr))
@@ -314,6 +388,8 @@ def run(ev, pre_dir, seeds, out_dir, device, local_ctx):
         "auroc": auroc,
         "seed_stats": {str(k): v for k, v in seed_stats.items()},
         "elapsed_sec": dt,
+        # Relation IDs in exposure NPZs need this mapping to remain interpretable.
+        "relation_index": load_relation_index(pre_dir, DB_NAME),
     }
     # Edge-instance counts; singleton strata cannot change.
     cov = {
@@ -344,13 +420,7 @@ def run(ev, pre_dir, seeds, out_dir, device, local_ctx):
 
 
 def main():
-    """Parse CLI options, construct the evaluator, then run validation or RT.
-
-    ``--ctx`` and ``--local-ctx`` select the sampled-context configuration.
-    ``--pre-dir`` must point at locally generated RT artifacts. ``--dry-run``
-    validates one sampled batch without loading the checkpoint; omitting it runs
-    full base-plus-rewired inference and writes results below ``--out-root``.
-    """
+    """Select a context size, local RT artifact, seeds, and dry/full run mode."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--ctx", type=int, required=True)
     ap.add_argument("--local-ctx", type=int, required=True)
