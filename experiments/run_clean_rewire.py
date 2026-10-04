@@ -1,472 +1,410 @@
-"""Compare clean and rewired FK links on RelBench ``rel-f1/driver-dnf``.
+"""Validate and run the paired RT-PluRel corruption matrix on rel-f1/driver-dnf.
 
-Each evaluator batch contains one sampled context per prediction query. The
-clean arm and three seeded rewired arms share a single frozen RT-PluRel model;
-only the FK parent IDs differ. The rewiring algorithm and its checks live in
-``rfm_structure.rewiring``. Input comes from ``scripts/preprocess.sh`` and
-generated outputs go under ``results/runs/`` by default.
-
-``--dry-run`` validates only the first evaluator batch without model inference.
-It does not establish that all prediction queries have been checked.
-
-Usage:
-  python experiments/run_clean_rewire.py --ctx 48 --local-ctx 24 --dry-run \
-      --pre-dir artifacts/clean_rewire_preprocessed
-  python experiments/run_clean_rewire.py --ctx 48 --local-ctx 24 --seeds 101,202,303 \
-      --pre-dir artifacts/clean_rewire_preprocessed
+No weights are loaded in --dry-run. Full runs validate every context/arm first,
+then require adequate resources and a local checkpoint: no implicit downloads.
 """
+
 import argparse
 import json
 import os
 import sys
 import time
+from pathlib import Path
+from types import SimpleNamespace
 
-os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
 import numpy as np
-import torch
-from rt import RelationalTransformer
-from rt.eval_utils import build_evaluator
-from rt.tasks import tasks_from_preprocessed
 
-from rfm_structure.data import load_relation_index
-from rfm_structure.rewiring import (
-    assert_structural_invariants,
-    attn_true_counts,
-    rewire_f2p_nbr,
-    summarize_query_exposure,
+from rfm_structure.data import load_expected_target_ids, load_relation_index
+from rfm_structure.metrics import binary_auroc
+from rfm_structure.provenance import (
+    file_identity,
+    preprocessing_identity,
+    software_versions,
+    source_identity,
+)
+from rfm_structure.validation import (
+    EDGE_FIELDS,
+    TEMPORAL_FIELDS,
+    assert_held_fixed,
+    batch_fingerprint,
+    capture_evaluator_masks,
+    configure_complete_evaluation,
+    experiment_arms,
+    numpy_batch,
+    real_query_batch,
+    rewire_and_validate_batch,
+    validate_batches,
+    write_exposure_npz,
 )
 
+os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
 CKPT = "stanford-star/rt-plurel/classification"
 DB_NAME = "rel-f1"
 TASK_TABLE = "driver-dnf"
 ITEMS_PER_TASK = 702
+STRENGTH_RULE = "whole cycles in shuffled-index order; strict distance improvement toward Python round-to-even(alpha * max changed IDs); ties unchanged"
 
 
-class _Captured:
-    """Share the current clean batch between model wrappers."""
+def save_json(path, content):
+    """Replace only this run's status file atomically; directories are exclusive."""
+    path = Path(path)
+    temporary = path.with_suffix(".json.tmp")
+    with temporary.open("w") as handle:
+        json.dump(content, handle, indent=2, allow_nan=False)
+    temporary.replace(path)
 
 
-class BaseWrap(torch.nn.Module):
-    """Run the clean arm and capture each batch for comparison with rewired arms."""
+class BaseWrap:
+    """Check replay identity and record clean exposure before predicting once."""
 
-    def __init__(self, inner, holder):
-        super().__init__()
+    def __init__(self, inner, holder, seed):
         self.inner = inner
         self.holder = holder
-
-    def predict(self, batch, eval_ctx_sizes, device, task, bool_as_num):
-        """Capture the current control batch, then delegate to RT prediction."""
-        self.holder.batch = {
-            k: (v.cpu().clone() if isinstance(v, torch.Tensor) else v)
-            for k, v in batch.items()
-        }
-        return self.inner.predict(batch, eval_ctx_sizes, device, task, bool_as_num)
-
-
-class RewireWrap(torch.nn.Module):
-    """Check and run one seeded FK-parent rewiring arm on the shared RT model.
-
-    ``stats`` accumulates eligible/changed edge instances across batches;
-    ``exposure_batches`` retains the corresponding per-query relation counts.
-    """
-
-    def __init__(self, inner, seed, holder, stats):
-        super().__init__()
-        self.inner = inner
         self.seed = seed
-        self.holder = holder
-        self.stats = stats
+        self.stats = {}
         self.exposure_batches = []
 
+    def eval(self):
+        self.inner.eval()
+
     def predict(self, batch, eval_ctx_sizes, device, task, bool_as_num):
-        """Verify held-fixed inputs, validate rewiring, then predict."""
-        # The evaluator calls the clean arm first for this same sampled batch.
-        base = self.holder.batch
-        assert base is not None, "rewire arm ran before the control arm"
-        assert set(batch) == set(base), "batch-equality gate found different keys"
-        for k in batch:
-            if k in ("f2p_nbr_idxs", "batch_mask"):
-                # FK parents are the intervention; batch_mask is evaluator metadata.
-                continue
-            if isinstance(batch[k], torch.Tensor):
-                assert torch.equal(
-                    batch[k].cpu(), base[k].cpu()
-                ), f"batch-equality gate failed on {k}"
-            else:
-                assert batch[k] == base[k], f"batch-equality gate failed on {k}"
-        b = {k: (v.clone() if isinstance(v, torch.Tensor) else v) for k, v in batch.items()}
-        nbr = b["f2p_nbr_idxs"].cpu().numpy().astype(np.int64)
-        rel = b["f2p_rel_idxs"].cpu().numpy().astype(np.int64)
-        nid = b["node_idxs"].cpu().numpy().astype(np.int64)
-        pad = b["is_padding"].cpu().numpy()
-        timestamps = b["timestamps"].cpu().numpy().astype(np.int64)
-        is_targets = b["is_targets"].cpu().numpy().astype(bool)
-        sequence_stats = []
-        new_nbr = rewire_f2p_nbr(
-            nbr,
-            rel,
-            nid,
-            pad,
-            self.seed,
-            stats=self.stats,
-            sequence_stats=sequence_stats,
-        )
-        errors = assert_structural_invariants(
-            nbr,
-            new_nbr,
-            rel,
-            nid,
-            pad,
-            timestamps=timestamps,
-            is_targets=is_targets,
-        )
-        assert not errors, f"structural invariant gate failed: {errors}"
-        self.exposure_batches.append(summarize_query_exposure(
-            nid,
-            rel,
-            pad,
-            is_targets,
-            b["col_name_idxs"].cpu().numpy(),
-            b["is_task_nodes"].cpu().numpy().astype(bool),
-            sequence_stats,
-        ))
-        b["f2p_nbr_idxs"] = torch.from_numpy(new_nbr).to(b["f2p_nbr_idxs"].dtype)
-        return self.inner.predict(b, eval_ctx_sizes, device, task, bool_as_num)
+        real, _ = real_query_batch({**batch, "batch_mask": self.holder.batch_mask})
+        index = self.holder.batch_index
+        if index >= len(self.holder.fingerprints) or batch_fingerprint(real) != self.holder.fingerprints[index]:
+            raise ValueError("sampled input differs from the validated batch replay")
+        self.holder.batch_index += 1
+        self.holder.batch = real
+        self.record(rewire_and_validate_batch(real, self.seed, 0.0))
+        return self.predict_checked(batch, real, eval_ctx_sizes, device, task, bool_as_num)
+
+    def predict_checked(self, batch, expected, eval_ctx_sizes, device, task, bool_as_num):
+        """Count the forward and ensure prediction leaves sampled inputs intact."""
+        self.holder.forward_calls += 1
+        predictions = self.inner.predict(batch, eval_ctx_sizes, device, task, bool_as_num)
+        after, _ = real_query_batch({**batch, "batch_mask": self.holder.batch_mask})
+        if batch_fingerprint(after) != batch_fingerprint(expected):
+            raise ValueError("model prediction mutated its sampled input")
+        return predictions
+
+    def record(self, evidence):
+        if evidence["errors"] or evidence["base_temporal"]["unknown"] or evidence["temporal"]["unknown"]:
+            raise ValueError(f"structural/temporal validation failed or uncertain: {evidence['errors'][:20]}")
+        for field in EDGE_FIELDS:
+            self.stats[field] = self.stats.get(field, 0) + evidence["totals"].get(field, 0)
+        self.exposure_batches.append(evidence["exposure"])
+
+
+class RewireWrap(BaseWrap):
+    """Only FK parents change; preserve evaluator phantom prediction shapes."""
+
+    def __init__(self, inner, seed, alpha, holder):
+        super().__init__(inner, holder, seed)
+        self.alpha = alpha
+
+    def predict(self, batch, eval_ctx_sizes, device, task, bool_as_num):
+        real, _ = real_query_batch({**batch, "batch_mask": self.holder.batch_mask})
+        assert_held_fixed(self.holder.batch, real)
+        if not np.array_equal(self.holder.batch["f2p_nbr_idxs"], real["f2p_nbr_idxs"]):
+            raise ValueError("arm did not receive clean FK parents")
+        evidence = rewire_and_validate_batch(real, self.seed, self.alpha)
+        self.record(evidence)
+        full = numpy_batch({"nbr": batch["f2p_nbr_idxs"]})["nbr"]
+        full[self.holder.batch_mask] = evidence["batch"]["f2p_nbr_idxs"]
+        parent_tensor = batch["f2p_nbr_idxs"]
+        if hasattr(parent_tensor, "detach"):
+            import torch
+
+            full = torch.from_numpy(full).to(dtype=parent_tensor.dtype, device=parent_tensor.device)
+        model_input = {**batch, "f2p_nbr_idxs": full}
+        return self.predict_checked(model_input, evidence["batch"], eval_ctx_sizes, device, task, bool_as_num)
 
 
 def build_tasks(pre_dir):
-    """Find the driver-DNF test task in the local preprocessed RT data."""
-    tasks = [
-        t for t in tasks_from_preprocessed(pre_dir, splits=("test",), dbs=[DB_NAME])
-        if t.table_name == TASK_TABLE
-    ]
-    assert tasks, f"no {TASK_TABLE} task found in {pre_dir}"
+    from rt.tasks import tasks_from_preprocessed
+
+    tasks = [task for task in tasks_from_preprocessed(pre_dir, splits=("test",), dbs=[DB_NAME]) if task.table_name == TASK_TABLE]
+    if len(tasks) != 1:
+        raise ValueError("expected exactly one driver-dnf test classification task")
     return tasks
 
 
-def dry_run(ev, pre_dir, seeds, out_dir):
-    """Check the first sampled batch without loading the RT model.
+def dry_run(ev, pre_dir, seeds, out_dir, local_ctx, fractions=None):
+    """Persist full coverage/evidence; exits 0 passed, 1 failed, 2 uncertain."""
+    report_path = Path(out_dir) / "validation.json"
+    report = {"status": "in_progress", "complete": False, "inference_ready": False,
+              "ctx": int(ev.ctx_sizes[0]), "local_ctx": int(local_ctx), "seeds": list(seeds)}
+    with report_path.open("x") as handle:
+        json.dump(report, handle)
+    started = time.time()
+    try:
+        expected = load_expected_target_ids(pre_dir, ev.tasks[0], ITEMS_PER_TASK)
+        relations = load_relation_index(pre_dir, DB_NAME)
+        loader = configure_complete_evaluation(ev, len(expected))
+        report, exposures = validate_batches(loader, expected, seeds, ev.ctx_sizes[0], fractions)
+        report.update(db_name=DB_NAME, task_table=TASK_TABLE, pre_dir=str(pre_dir), local_ctx=int(local_ctx),
+                      relation_index=relations, eval_bs=int(ev.eval_bs), scheduled_batches=len(loader.dataset),
+                      evaluator_batch_cap=None, strength_rule=STRENGTH_RULE)
+        if report["complete"]:
+            for name, batches in exposures.items():
+                suffix = f"rw{name}" if isinstance(name, int) else name
+                arrays = write_exposure_npz(Path(out_dir) / f"validation_exposure_{suffix}.npz", batches)
+                if not np.array_equal(arrays["target_node_idxs"], report["target_node_idxs"]):
+                    raise ValueError(f"arm {name}: saved target order differs")
+                if not set(arrays["relation_ids"].tolist()).issubset(relations):
+                    raise ValueError(f"arm {name}: unknown relation IDs")
+                for key in TEMPORAL_FIELDS:
+                    if int(arrays[f"temporal_{key}"].sum()) != report["per_arm"][str(name)]["temporal"][key]:
+                        raise ValueError(f"arm {name}: temporal exposure mismatch for {key}")
+                    if int(arrays[f"base_temporal_{key}"].sum()) != report["base_temporal"][key]:
+                        raise ValueError(f"arm {name}: base temporal exposure mismatch for {key}")
+        report["inference_ready"] = report["status"] == "passed"
+    except Exception as error:  # noqa: BLE001 -- preserve incomplete evidence on sampler/writer errors
+        report.update(status="failed", complete=False, inference_ready=False)
+        report.setdefault("errors", []).append(f"{type(error).__name__}: {error}")
+    report["elapsed_sec"] = time.time() - started
+    save_json(report_path, report)
+    print(f"[validation] {report['status']}: {report_path}", flush=True)
+    return {"passed": 0, "temporal_uncertainty": 2}.get(report["status"], 1)
 
-    Saves that batch, per-seed query exposure, and a validation report. Returns
-    nonzero if a check fails or fewer than 80% of non-singleton eligible edges
-    change. This checks one batch, not every prediction query. ``pre_dir`` is
-    already used by the evaluator and is not read directly here.
-    """
-    task = ev.tasks[0]
-    loader = ev.eval_loaders[task]
-    batch = next(iter(loader))
-    report = {"seeds": [int(s) for s in seeds], "ctx": ev.ctx_sizes[0]}
 
-    # Preserve the exact sampled batch inspected by this dry-run.
-    cap = {k: (v.cpu().clone() if isinstance(v, torch.Tensor) else v) for k, v in batch.items()}
-    torch.save(cap, os.path.join(out_dir, "base_context.pt"))
+def load_frozen_model(checkpoint_dir, device):
+    """Load local weights only, after real validation and resource checks."""
+    import torch
+    from rt import RelationalTransformer
 
-    nbr = cap["f2p_nbr_idxs"].cpu().numpy().astype(np.int64)
-    rel = cap["f2p_rel_idxs"].cpu().numpy().astype(np.int64)
-    nid = cap["node_idxs"].cpu().numpy().astype(np.int64)
-    pad = cap["is_padding"].cpu().numpy()
+    checkpoint = Path(checkpoint_dir).expanduser()
+    config_path = checkpoint / "config.json"
+    config = json.loads(config_path.read_text())
+    weights = checkpoint / config.get("checkpoint_file", "model.safetensors")
+    if not weights.is_file():
+        raise ValueError("compatible local classification checkpoint weights are required")
+    if device != "cuda" or not torch.cuda.is_available():
+        raise ValueError("real inference requires a suitable CUDA runtime; CPU validation remains available")
+    capability = torch.cuda.get_device_capability()
+    if capability[0] < 8:
+        raise ValueError("insufficient CUDA capability for RT bfloat16 inference")
+    # A preceding context can leave unoccupied allocator memory reserved.
+    torch.cuda.empty_cache()
+    free, total = torch.cuda.mem_get_info()
+    required = max(8 * 2**30, 3 * weights.stat().st_size)
+    if free < required:
+        raise ValueError("insufficient CUDA capability/free memory for RT bfloat16 inference")
+    available_ram = int(next(line.split()[1] for line in Path("/proc/meminfo").read_text().splitlines()
+                             if line.startswith("MemAvailable:"))) * 1024
+    if available_ram < max(2 * 2**30, 2 * weights.stat().st_size):
+        raise ValueError("insufficient available host RAM for checkpoint loading and RT inference")
+    model = RelationalTransformer.from_pretrained(str(checkpoint), device=device).to(torch.bfloat16)
+    model.eval()
+    for parameter in model.parameters():
+        parameter.requires_grad_(False)
 
-    fb, nb = attn_true_counts(nid, nbr, pad)
-    report["base_feat_counts"] = fb
-    report["base_nbr_counts"] = nb
+    # RT's evaluate_raw already runs predictions inside torch.inference_mode.
+    return model, {"name": CKPT, "weights": file_identity(weights), "config": file_identity(config_path),
+                      "local_revision": next((part for index, part in enumerate(checkpoint.parts)
+                                              if index and checkpoint.parts[index - 1] == "snapshots"
+                                              and len(part) == 40 and all(char in "0123456789abcdef" for char in part)), None),
+                      "device": torch.cuda.get_device_name(), "capability": list(capability),
+                      "free_vram_bytes_before_load": free, "total_vram_bytes": total}
 
-    per_seed = {}
-    for seed in seeds:
-        stats = {}
-        sequence_stats = []
-        new_nbr = rewire_f2p_nbr(
-            nbr,
-            rel,
-            nid,
-            pad,
-            int(seed),
-            stats=stats,
-            sequence_stats=sequence_stats,
-        )
-        errs = assert_structural_invariants(
-            nbr,
-            new_nbr,
-            rel,
-            nid,
-            pad,
-            timestamps=cap["timestamps"].cpu().numpy().astype(np.int64),
-            is_targets=cap["is_targets"].cpu().numpy().astype(bool),
-        )
-        exposure = summarize_query_exposure(
-            nid,
-            rel,
-            pad,
-            cap["is_targets"].cpu().numpy().astype(bool),
-            cap["col_name_idxs"].cpu().numpy(),
-            cap["is_task_nodes"].cpu().numpy().astype(bool),
-            sequence_stats,
-        )
-        write_exposure_npz(os.path.join(out_dir, f"exposure_rw{seed}.npz"), [exposure])
-        eligible_edges = stats["eligible_edges"]
-        changed_edges = stats["changed_edges"]
-        singleton_edges = stats.get("singleton_edges", 0)
-        raw_fraction = changed_edges / eligible_edges if eligible_edges else 0.0
-        rewirable_edges = eligible_edges - singleton_edges
-        rewirable_fraction = changed_edges / rewirable_edges if rewirable_edges else 0.0
-        per_seed[int(seed)] = {
-            "eligible_edges": eligible_edges,
-            "changed_edges": changed_edges,
-            "singleton_edges": singleton_edges,
-            "changed_edge_fraction": raw_fraction,
-            "rewirable_edge_fraction": rewirable_fraction,
-            "unrewirable_strata": stats.get("unrewirable_strata", 0),
-            "invariant_errors": errs,
-        }
-        if errs:
-            print(f"[dry-run] seed {seed} INVARIANT FAILURES: {errs}", flush=True)
+
+def run(ev, pre_dir, seeds, out_dir, device, local_ctx, *, fractions=(0.0, 0.5, 1.0),
+        validation_report=None, checkpoint_dir=None, model_factory=None, provenance=None):
+    """Technically gated inference; factory injection is only for lightweight tests."""
+    out_dir = Path(out_dir)
+    if validation_report is None:
+        rc = dry_run(ev, pre_dir, seeds, out_dir, local_ctx, fractions)
+        if rc:
+            raise ValueError("inference blocked: validation failed or timestamps remain uncertain")
+        validation_report = json.loads((out_dir / "validation.json").read_text())
+    manifest_path = out_dir / "manifest.json"
+    manifest = {"status": "in_progress", "complete": False, "db_name": DB_NAME, "task_table": TASK_TABLE,
+                "ctx": int(ev.ctx_sizes[0]), "local_ctx": int(local_ctx), "seeds": list(seeds),
+                "fractions": list(fractions), "checkpoint": CKPT, "validation": validation_report,
+                "relation_index": load_relation_index(pre_dir, DB_NAME), "strength_rule": STRENGTH_RULE,
+                "provenance": provenance or {}, "evidence_kind": "synthetic_test" if model_factory else "real"}
+    with manifest_path.open("x") as handle:
+        json.dump(manifest, handle)
+    started = time.time()
+    holder = None
+    try:
+        arms = experiment_arms(seeds, fractions)
+        if arms[0][0] != "base":
+            raise ValueError("inference requires a clean arm first")
+        if validation_report["status"] != "passed" or not validation_report["complete"]:
+            raise ValueError("complete technically passed validation is required")
+        if set(validation_report["per_arm"]) != {name for name, _, _ in arms}:
+            raise ValueError("validation arm set differs from inference")
+        for name, alpha, seed in arms:
+            checked = validation_report["per_arm"][name]
+            if checked["requested_strength"] != alpha or checked["matching_seed"] != seed:
+                raise ValueError("validation strength/seed differs from inference")
+            if alpha > 0 and checked["totals"]["changed_edges"] == 0:
+                raise ValueError(f"arm {name}: no realized corruption; inference would be uninformative")
+        configure_complete_evaluation(ev, ITEMS_PER_TASK)
+        if model_factory:
+            model = model_factory()
+            manifest["checkpoint_provenance"] = {"test_only": True}
         else:
-            print(
-                f"[dry-run] seed {seed} OK eligible_edges={eligible_edges} "
-                f"changed_edges={changed_edges} changed_edge_fraction={raw_fraction:.3f} "
-                f"rewirable_edge_fraction={rewirable_fraction:.3f}",
-                flush=True,
-            )
-    report["per_seed"] = per_seed
-    with open(os.path.join(out_dir, "dry_run_report.json"), "w") as f:
-        json.dump(report, f, indent=2)
-    print(f"[dry-run] wrote {out_dir}/dry_run_report.json", flush=True)
-    failed = [s for s, v in per_seed.items() if v["invariant_errors"]]
-    if failed:
-        print(f"[dry-run] ABORT: invariants failed for seeds {failed}", flush=True)
-        return 1
-    if any(v["rewirable_edge_fraction"] < 0.8 for v in per_seed.values()):
-        print("[dry-run] ABORT: rewirable edge fraction < 0.80 for some seed", flush=True)
-        return 1
-    print("[dry-run] all gates passed; ready for model forward.", flush=True)
-    return 0
-
-
-def write_exposure_npz(path, batches):
-    """Save per-query FK counts and flattened per-relation counts as NPZ.
-
-    Each batch uses local row indices. Exclude rows without one target, append
-    the remaining queries in evaluation order, and remap relation rows to their
-    index in the saved query arrays. ``changed_edge_fractions`` divides changed
-    by eligible FK edge instances; it is zero when none are eligible.
-    """
-    query_fields = (
-        "target_node_idxs",
-        "context_token_counts",
-        "eligible_edges",
-        "changed_edges",
-        "singleton_edges",
-        "unrewirable_edges",
-        "unrewirable_strata",
-        "unique_parent_nodes",
-        "labeled_support_counts",
-    )
-    query_values = {field: [] for field in query_fields}
-    relation_values = {
-        "relation_query_indices": [],
-        "relation_ids": [],
-        "relation_eligible_edges": [],
-        "relation_changed_edges": [],
-        "relation_singleton_edges": [],
-        "relation_unrewirable_edges": [],
-        "relation_unrewirable_strata": [],
-    }
-    query_offset = 0
-    for batch in batches:
-        query_mask = batch["is_prediction_query"]
-        remap = np.full(len(query_mask), -1, dtype=np.int64)
-        remap[query_mask] = np.arange(query_mask.sum(), dtype=np.int64) + query_offset
-        for field in query_fields:
-            query_values[field].append(batch[field][query_mask])
-        relation_mask = query_mask[batch["relation_query_indices"]]
-        relation_values["relation_query_indices"].append(
-            remap[batch["relation_query_indices"][relation_mask]]
-        )
-        for field in tuple(relation_values)[1:]:
-            relation_values[field].append(batch[field][relation_mask])
-        query_offset += int(query_mask.sum())
-    arrays = {
-        field: np.concatenate(values) if values else np.array([], dtype=np.int64)
-        for field, values in query_values.items()
-    }
-    arrays["changed_edge_fractions"] = np.divide(
-        arrays["changed_edges"],
-        arrays["eligible_edges"],
-        out=np.zeros(len(arrays["eligible_edges"]), dtype=float),
-        where=arrays["eligible_edges"] != 0,
-    )
-    arrays.update({
-        field: np.concatenate(values) if values else np.array([], dtype=np.int64)
-        for field, values in relation_values.items()
-    })
-    np.savez(path, **arrays)
-    return arrays
-
-
-def run(ev, pre_dir, seeds, out_dir, device, local_ctx):
-    """Evaluate clean and rewired arms, then save aligned predictions and exposure.
-
-    One evaluator pass uses the same sampled contexts and RT model for every
-    arm. The saved NPZ files hold labels, raw scores, and target row IDs; the
-    manifest records AUROC, aggregate edge counts, and FK relation metadata.
-    """
-    from sklearn.metrics import roc_auc_score
-
-    holder = _Captured()
-    holder.batch = None
-    base = BaseWrap(None, holder)  # inner set after model load
-    wrappers = [("base", base)]
-    seed_stats = {}
-    for s in seeds:
-        st = {}
-        seed_stats[int(s)] = st
-        wrappers.append((f"rw{int(s)}", RewireWrap(None, int(s), holder, st)))
-
-    # Sharing weights makes parent identity the only intended model input change.
-    model = RelationalTransformer.from_pretrained(
-        CKPT, device=device
-    )
-    model = model.to(torch.bfloat16)
-
-    base.inner = model
-    for _, w in wrappers[1:]:
-        w.inner = model
-
-    ctx = ev.ctx_sizes[0]
-    labels_acc = {p: [] for p, _ in wrappers}
-    preds_acc = {p: [] for p, _ in wrappers}
-    nid_acc = []
-
-    t0 = time.time()
-    for out in ev.evaluate_raw(
-        [(w, p) for p, w in wrappers], [ctx], with_node_idxs=True
-    ):
-        _task, _ctx_size, labels_np, preds_by_prefix, _num_labels, node_idxs_np = out
-        nid_acc.append(node_idxs_np)
-        for p, _ in wrappers:
-            labels_acc[p].append(labels_np)
-            preds_acc[p].append(preds_by_prefix[p])
-
-    dt = time.time() - t0
-    labels_all = {p: np.concatenate(v) for p, v in labels_acc.items()}
-    preds_all = {p: np.concatenate(v) for p, v in preds_acc.items()}
-    node_idxs_all = np.concatenate(nid_acc)
-
-    for prefix, wrapper in wrappers[1:]:
-        exposure_path = os.path.join(out_dir, f"exposure_{prefix}.npz")
-        exposure = write_exposure_npz(exposure_path, wrapper.exposure_batches)
-        assert np.array_equal(exposure["target_node_idxs"], node_idxs_all), (
-            f"{prefix}: exposure rows do not align with evaluator predictions"
-        )
-
-    # Raw logits and sigmoid probabilities have the same AUROC ranking.
-    n_unique = len(np.unique(node_idxs_all))
-    assert n_unique == ITEMS_PER_TASK, f"expected 702 unique nodes, got {n_unique}"
-    auroc = {}
-    for p, labels in labels_all.items():
-        lab = labels.astype(float)
-        pr = preds_all[p].astype(float)
-        assert np.all(np.isfinite(pr)), f"{p}: non-finite predictions"
-        lab_bin = (lab > 0).astype(int)
-        auroc[p] = float(roc_auc_score(lab_bin, pr))
-        np.savez(
-            os.path.join(out_dir, f"preds_{p}.npz"),
-            labels=lab, preds=pr, node_idxs=node_idxs_all,
-        )
-        print(f"  {p}: preds min={pr.min():.4f} max={pr.max():.4f} AUROC={auroc[p]:.4f}",
-              flush=True)
-
-    manifest = {
-        "db_name": DB_NAME,
-        "task_table": TASK_TABLE,
-        "ctx": int(ctx),
-        "local_ctx": int(local_ctx),
-        "seeds": [int(s) for s in seeds],
-        "checkpoint": CKPT,
-        "pre_dir": pre_dir,
-        "items_per_task": ITEMS_PER_TASK,
-        "n_unique_nodes": int(n_unique),
-        "auroc": auroc,
-        "seed_stats": {str(k): v for k, v in seed_stats.items()},
-        "elapsed_sec": dt,
-        # Relation IDs in exposure NPZs need this mapping to remain interpretable.
-        "relation_index": load_relation_index(pre_dir, DB_NAME),
-    }
-    # Edge-instance counts; singleton strata cannot change.
-    cov = {
-        str(k): {
-            "eligible_edges": v.get("eligible_edges", 0),
-            "changed_edges": v.get("changed_edges", 0),
-            "singleton_edges": v.get("singleton_edges", 0),
-            "changed_edge_fraction": (
-                v.get("changed_edges", 0) / v["eligible_edges"]
-                if v.get("eligible_edges") else 0.0
-            ),
-            "rewirable_edge_fraction": (
-                (v.get("changed_edges", 0) / (v["eligible_edges"] - v.get("singleton_edges", 0)))
-                if (v.get("eligible_edges", 0) - v.get("singleton_edges", 0)) > 0 else 0.0
-            ),
-        }
-        for k, v in seed_stats.items()
-    }
-    manifest["coverage"] = cov
-    with open(os.path.join(out_dir, "manifest.json"), "w") as f:
-        json.dump(manifest, f, indent=2)
-
-    print(f"[run] ctx={ctx} done in {dt:.0f}s", flush=True)
-    for p, score in auroc.items():
-        print(f"  {p:>8} AUROC={score:.4f}", flush=True)
-    print(f"[run] manifest -> {out_dir}/manifest.json", flush=True)
+            if checkpoint_dir is None:
+                raise ValueError("a local checkpoint is required; weights are never implicitly downloaded")
+            model, manifest["checkpoint_provenance"] = load_frozen_model(checkpoint_dir, device)
+        holder = SimpleNamespace(batch=None, batch_index=0, forward_calls=0, fingerprints=validation_report["batch_fingerprints"])
+        capture_evaluator_masks(ev, holder)
+        wrappers = [(name, BaseWrap(model, holder, seed) if alpha == 0 else RewireWrap(model, seed, alpha, holder))
+                    for name, alpha, seed in arms]
+        outputs = list(ev.evaluate_raw([(wrapper, name) for name, wrapper in wrappers], ev.ctx_sizes, with_node_idxs=True))
+        if len(outputs) != 1:
+            raise ValueError("expected one task/context output")
+        _, _, labels, preds, _, ids = outputs[0]
+        expected = load_expected_target_ids(pre_dir, ev.tasks[0], ITEMS_PER_TASK)
+        if len(ids) != ITEMS_PER_TASK or not np.array_equal(np.sort(ids), expected):
+            raise ValueError("predictions do not cover exactly the 702 intended targets")
+        if not np.array_equal(ids, validation_report["target_node_idxs"]) or not np.array_equal(labels, validation_report["labels"]):
+            raise ValueError("prediction target/label order differs from validated data")
+        if holder.batch_index != len(holder.fingerprints):
+            raise ValueError("inference did not traverse every validated batch")
+        manifest["arms"] = {}
+        for (name, alpha, seed), (_, wrapper) in zip(arms, wrappers, strict=True):
+            scores = np.asarray(preds[name], dtype=float)
+            if scores.shape != (ITEMS_PER_TASK,) or not np.all(np.isfinite(scores)):
+                raise ValueError(f"arm {name}: invalid raw scores")
+            exposure_path = out_dir / f"exposure_{name}.npz"
+            exposure = write_exposure_npz(exposure_path, wrapper.exposure_batches)
+            if not np.array_equal(exposure["target_node_idxs"], ids):
+                raise ValueError(f"arm {name}: exposure/prediction alignment failed")
+            with np.load(out_dir / f"validation_exposure_{name}.npz", allow_pickle=False) as checked:
+                if set(checked.files) != set(exposure) or any(
+                    not np.array_equal(checked[key], exposure[key], equal_nan=True) for key in checked.files
+                ):
+                    raise ValueError(f"arm {name}: exposure differs from pre-inference validation")
+            for key in EDGE_FIELDS:
+                if int(exposure[key].sum()) != wrapper.stats.get(key, 0):
+                    raise ValueError(f"arm {name}: aggregate exposure mismatch")
+            prediction_path = out_dir / f"preds_{name}.npz"
+            with prediction_path.open("xb") as handle:
+                np.savez(handle, labels=labels, preds=scores, node_idxs=ids)
+            manifest["arms"][name] = {"requested_strength": alpha, "seed": None if alpha == 0 else seed,
+                                      "matching_seed": seed, "auroc": binary_auroc(labels, scores), "totals": wrapper.stats,
+                                      "predictions": prediction_path.name, "exposure": exposure_path.name,
+                                      "prediction_sha256": file_identity(prediction_path)["sha256"],
+                                      "exposure_sha256": file_identity(exposure_path)["sha256"]}
+        manifest.update(status="complete", complete=True, n_queries=len(ids))
+    except Exception as error:
+        manifest.update(status="failed", complete=False, errors=[f"{type(error).__name__}: {error}"])
+        raise
+    finally:
+        manifest["model_forward_attempts"] = holder.forward_calls if holder else 0
+        if manifest["status"] == "in_progress":
+            manifest.update(status="interrupted", complete=False)
+        manifest["elapsed_sec"] = time.time() - started
+        save_json(manifest_path, manifest)
     return manifest
 
 
+def execute_matrix(evaluators, pre_dir, seeds, fractions, out_dir, *, dry_only=True,
+                   checkpoint_dir=None, device="cuda", model_factory=None, provenance=None):
+    """Validate every context before any weight load or model forward."""
+    root = Path(out_dir)
+    root.mkdir(parents=True, exist_ok=False)
+    status = {"status": "in_progress", "complete": False, "contexts": {}, "inference_ran": False,
+              "task": f"{DB_NAME}/{TASK_TABLE}", "seeds": list(seeds), "fractions": list(fractions),
+              "provenance": provenance or {}, "evidence_kind": "synthetic_test" if model_factory else "validation_only" if dry_only else "real"}
+    save_json(root / "matrix.json", status)
+    try:
+        validated = {}
+        for ctx, ev in evaluators.items():
+            directory = root / f"ctx{ctx}_lctx{ctx // 2}"
+            directory.mkdir()
+            dry_run(ev, pre_dir, seeds, directory, ctx // 2, fractions)
+            report = json.loads((directory / "validation.json").read_text())
+            validated[ctx] = report
+            status["contexts"][str(ctx)] = report["status"]
+        if any(result != "passed" for result in status["contexts"].values()):
+            status["status"] = "validation_failed" if "failed" in status["contexts"].values() else "temporal_uncertainty"
+            return status
+        reference = next(iter(validated.values()))
+        if any(report["target_node_idxs"] != reference["target_node_idxs"] or report["labels"] != reference["labels"]
+               for report in validated.values()):
+            raise ValueError("target/label alignment differs across contexts")
+        if dry_only:
+            status.update(status="validated", complete=True)
+            return status
+        if set(evaluators) != {48, 128} or set(fractions) != {0.0, 0.5, 1.0} or seeds != [101, 202, 303]:
+            raise ValueError("preliminary inference requires both contexts and all 14 agreed arms")
+        for ctx, ev in evaluators.items():
+            directory = root / f"ctx{ctx}_lctx{ctx // 2}"
+            run(ev, pre_dir, seeds, directory, device, ctx // 2, fractions=fractions,
+                validation_report=validated[ctx], checkpoint_dir=checkpoint_dir, model_factory=model_factory, provenance=provenance)
+        status.update(status="complete", complete=True)
+        return status
+    except Exception as error:
+        status.update(status="failed", complete=False, errors=[f"{type(error).__name__}: {error}"])
+        raise
+    finally:
+        status["inference_ran"] = any(
+            json.loads(path.read_text()).get("model_forward_attempts", 0) > 0
+            for path in root.glob("ctx*/manifest.json")
+        )
+        if status["status"] == "in_progress":
+            status.update(status="interrupted", complete=False)
+        save_json(root / "matrix.json", status)
+
+
 def main():
-    """Select a context size, local RT artifact, seeds, and dry/full run mode."""
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--ctx", type=int, required=True)
-    ap.add_argument("--local-ctx", type=int, required=True)
-    ap.add_argument("--seeds", type=str, default="101,202,303")
-    ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--pre-dir", required=True)
-    ap.add_argument("--out-root", default="results/runs")
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--ctx", type=int, choices=(48, 128))
+    parser.add_argument("--local-ctx", type=int)
+    parser.add_argument("--contexts", default="48,128")
+    parser.add_argument("--seeds", default="101,202,303")
+    parser.add_argument("--fractions", default="0,0.5,1")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--pre-dir", required=True)
+    parser.add_argument("--checkpoint-dir")
+    parser.add_argument("--out-root", default="results/runs")
+    args = parser.parse_args()
+    try:
+        contexts = [args.ctx] if args.ctx else [int(value) for value in args.contexts.split(",")]
+        seeds = [int(value) for value in args.seeds.split(",")]
+        fractions = [float(value) for value in args.fractions.split(",")]
+        experiment_arms(seeds, fractions)
+        if len(set(contexts)) != len(contexts) or not contexts or any(ctx not in (48, 128) for ctx in contexts):
+            raise ValueError("contexts must be unique values from 48 and 128")
+        if args.local_ctx is not None and (args.ctx is None or args.local_ctx != args.ctx // 2):
+            raise ValueError("local context must be 24 for 48 or 64 for 128")
+        pre_dir = Path(args.pre_dir).expanduser().resolve()
+        if not pre_dir.is_dir():
+            raise ValueError("pre-dir must be an existing local compatible artifact; no downloads")
+        if not args.dry_run and (set(contexts) != {48, 128} or seeds != [101, 202, 303] or set(fractions) != {0, 0.5, 1}):
+            raise ValueError("inference requires the complete preliminary matrix")
+        if not args.dry_run and (args.checkpoint_dir is None or not Path(args.checkpoint_dir).expanduser().is_dir()):
+            raise ValueError("inference requires an existing local checkpoint directory")
+    except ValueError as error:
+        parser.error(str(error))
+    root = Path(args.out_root).expanduser() / f"preliminary_{time.time_ns()}"
+    try:
+        provenance = {"source": source_identity(Path(__file__).resolve().parents[1]),
+                      "software": software_versions(), "preprocessing": preprocessing_identity(pre_dir, DB_NAME),
+                      "effective_arguments": vars(args), "sampling": {"context_seed": 0, "shuffle_seed": 0,
+                      "embedding_model": "all-MiniLM-L12-v2", "d_text": 384, "tokens_per_gpu": 2**18,
+                      "bfs_width": 32, "num_walks": 10000, "walk_length": 20, "prefer_latest": True}}
+        from rt.eval_utils import build_evaluator
 
-    pre_dir = os.path.expanduser(args.pre_dir)
-    seeds = [int(x) for x in args.seeds.split(",") if x.strip()]
-    out_root = os.path.expanduser(args.out_root)
-    run_id = f"ctx{args.ctx}_lctx{args.local_ctx}"
-    out_dir = os.path.join(out_root, run_id)
-    os.makedirs(out_dir, exist_ok=True)
-
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    tasks = build_tasks(pre_dir)
-
-    ev = build_evaluator(
-        tasks, pre_dir,
-        embedding_model="all-MiniLM-L12-v2", d_text=384,
-        device=device, ctx_size=args.ctx, local_ctx_size=args.local_ctx,
-        items_per_task=ITEMS_PER_TASK, num_workers=0, shuffle_seed=0,
-    )
-
-    if args.dry_run:
-        rc = dry_run(ev, pre_dir, seeds, out_dir)
-        sys.exit(rc)
-
-    manifest = run(ev, pre_dir, seeds, out_dir, device, args.local_ctx)
-    # final table
-    print("\n=== FINAL TABLE ===")
-    print("| ctx | local_ctx | base AUROC | " + " | ".join(f"rw{s}" for s in seeds)
-          + " | mean delta | seed range | changed/eligible edge instances | support/query | feat/nbr equal |")
-    base_a = manifest["auroc"]["base"]
-    rw = [manifest["auroc"][f"rw{s}"] for s in seeds]
-    mean_delta = np.mean([a - base_a for a in rw])
-    cov = manifest["coverage"]
-    changed = sum(v["changed_edges"] for v in cov.values())
-    eligible = sum(v["eligible_edges"] for v in cov.values())
-    print(f"| {args.ctx} | {args.local_ctx} | {base_a:.4f} | "
-          + " | ".join(f"{a:.4f}" for a in rw)
-          + f" | {mean_delta:+.4f} | {min(seeds)}-{max(seeds)} | {changed}/{eligible} | "
-          f"within-context | see manifest |")
+        tasks = build_tasks(str(pre_dir))
+        evaluators = {ctx: build_evaluator(tasks, str(pre_dir), embedding_model="all-MiniLM-L12-v2", d_text=384,
+                       device="cpu" if args.dry_run else "cuda", ctx_size=ctx, local_ctx_size=ctx // 2,
+                       items_per_task=ITEMS_PER_TASK, num_workers=0, shuffle_seed=0, context_seed=0) for ctx in contexts}
+        status = execute_matrix(evaluators, pre_dir, seeds, fractions, root, dry_only=args.dry_run,
+                                checkpoint_dir=args.checkpoint_dir, provenance=provenance)
+        print(f"[{status['status']}] {root}")
+        return 0 if status["complete"] else 2 if status["status"] == "temporal_uncertainty" else 1
+    except Exception as error:  # noqa: BLE001 -- persist setup errors without loading weights
+        root.mkdir(parents=True, exist_ok=True)
+        path = root / "matrix.json"
+        if not path.exists():
+            save_json(path, {"status": "setup_failed", "complete": False, "errors": [f"{type(error).__name__}: {error}"]})
+        print(f"[failed] {error}; evidence: {root}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

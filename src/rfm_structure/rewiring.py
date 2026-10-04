@@ -18,6 +18,10 @@ import numpy as np
 from scipy.optimize import linear_sum_assignment
 
 MAX_F2P_NBRS = 5
+TEMPORAL_FIELDS = (
+    "comparisons", "checked", "valid", "known_violations", "unknown",
+    "missing_target", "missing_parent", "missing_both",
+)
 
 
 def _present_nodes(node_idxs_b, pad_b):
@@ -44,6 +48,7 @@ def rewire_f2p_nbr(
     stats=None,
     registry=None,
     sequence_stats=None,
+    alpha=1.0,
 ):
     """Reassign eligible FK parent IDs without changing the input array.
 
@@ -64,7 +69,13 @@ def rewire_f2p_nbr(
 
     Returns a new parent-ID array. ``changed_edges`` counts eligible edge
     instances whose assigned parent ID actually differs, not prediction queries.
+    ``alpha`` targets the fraction of changed IDs in this seed's maximum
+    matching. Intermediate strengths select whole cycles in shuffled-index
+    order, accepting only strict improvements toward Python's round-to-even
+    target. Cycle selection consumes no RNG, preserving the legacy 1.0 stream.
     """
+    if not np.isfinite(alpha) or not 0 <= alpha <= 1:
+        raise ValueError("alpha must be a finite fraction between 0 and 1")
     nbr = nbr.copy()
     B, S, F = nbr.shape
     if stats is None:
@@ -72,13 +83,17 @@ def rewire_f2p_nbr(
     rng = np.random.default_rng(np.random.PCG64(seed))
     total_eligible = 0
     total_changed = 0
+    total_max_changed = 0
     unrewirable = 0
+    unrewirable_edges = 0
 
     for b in range(B):
         pad = is_padding[b]
         seq_stats = {
             "eligible_edges": 0,
             "changed_edges": 0,
+            "max_changed_edges": 0,
+            "requested_strength": float(alpha),
             "singleton_edges": 0,
             "unrewirable_edges": 0,
             "unrewirable_strata": 0,
@@ -143,6 +158,7 @@ def rewire_f2p_nbr(
                 {
                     "eligible_edges": 0,
                     "changed_edges": 0,
+                    "max_changed_edges": 0,
                     "singleton_edges": 0,
                     "unrewirable_edges": 0,
                     "unrewirable_strata": 0,
@@ -179,15 +195,39 @@ def rewire_f2p_nbr(
             feasible = all(cost[i, col_ind[i]] < INF for i in range(M))
             if not feasible:
                 unrewirable += 1
+                unrewirable_edges += M
                 seq_stats["unrewirable_strata"] += 1
                 seq_stats["unrewirable_edges"] += M
                 relation_stats["unrewirable_strata"] += 1
                 relation_stats["unrewirable_edges"] += M
                 continue
 
+            full_changed = int(np.sum(p_arr[col_ind] != p_arr))
+            total_max_changed += full_changed
+            seq_stats["max_changed_edges"] += full_changed
+            relation_stats["max_changed_edges"] += full_changed
+            selected = col_ind
+            if alpha < 1:
+                selected = np.arange(M)
+                visited = set()
+                changed = 0
+                target = round(alpha * full_changed)
+                for start in range(M):
+                    if start in visited:
+                        continue
+                    cycle = []
+                    i = start
+                    while i not in visited:
+                        visited.add(i)
+                        cycle.append(i)
+                        i = int(col_ind[i])
+                    weight = int(np.sum(p_arr[col_ind[cycle]] != p_arr[cycle]))
+                    if weight and abs(changed + weight - target) < abs(changed - target):
+                        selected[cycle] = col_ind[cycle]
+                        changed += weight
             for i in range(M):
                 u, k, p = edges[i]
-                new_p = int(p_arr[col_ind[i]])
+                new_p = int(p_arr[selected[i]])
                 if new_p != p:
                     total_changed += 1
                     seq_stats["changed_edges"] += 1
@@ -201,7 +241,9 @@ def rewire_f2p_nbr(
 
     stats["eligible_edges"] = stats.get("eligible_edges", 0) + total_eligible
     stats["changed_edges"] = stats.get("changed_edges", 0) + total_changed
+    stats["max_changed_edges"] = stats.get("max_changed_edges", 0) + total_max_changed
     stats["unrewirable_strata"] = stats.get("unrewirable_strata", 0) + unrewirable
+    stats["unrewirable_edges"] = stats.get("unrewirable_edges", 0) + unrewirable_edges
     return nbr
 
 
@@ -261,45 +303,83 @@ def attention_fanout_counts(node_idxs, nbr, is_padding):
     return {"feat": feat, "nbr": nbr_count}
 
 
-def temporal_parent_violations(nbr, node_idxs, timestamps, is_padding, is_targets):
-    """Report in-context FK parents dated after their prediction query.
+def summarize_temporal_status(nbr, node_idxs, timestamps, is_padding, is_targets):
+    """Count in-context parent comparisons once per source-node/FK-slot.
 
-    RT uses ``i32::MIN`` for unknown timestamps. Those comparisons are skipped,
-    so no reported violation does not prove full temporal validity. A sampled
-    context without exactly one target is reported as an error; this includes
-    evaluator phantom rows until they are filtered by the caller.
+    Callers must filter evaluator phantoms first. Unknown timestamps are
+    ``i32::MIN``. Missing-target and missing-parent counts overlap; subtract
+    missing-both to obtain unknown. Checked includes known violations:
+    comparisons = checked + unknown, checked = valid + known_violations.
+    Repeated cells must agree on timestamps and parent slots. No timestamp
+    is inferred from context membership or another row.
     """
     missing_timestamp = np.iinfo(np.int32).min
+    fields = TEMPORAL_FIELDS
+    result = {key: 0 for key in fields}
+    result["queries"] = []
     errors = []
     B, _, F = nbr.shape
     for b in range(B):
+        counts = {key: 0 for key in fields}
+        result["queries"].append(counts)
         target_positions = np.flatnonzero(is_targets[b] & ~is_padding[b])
         if len(target_positions) != 1:
             errors.append(f"b={b}: expected one prediction target, found {len(target_positions)}")
             continue
         target_s = int(target_positions[0])
         target_ts = int(timestamps[b, target_s])
-        if target_ts == missing_timestamp:
-            continue
         node_timestamps = {}
-        for s in np.flatnonzero(~is_padding[b]):
-            node = int(node_idxs[b, s])
-            timestamp = int(timestamps[b, s])
-            if timestamp == missing_timestamp:
-                continue
-            prior = node_timestamps.setdefault(node, timestamp)
-            if prior != timestamp:
+        cells_by_source = _cells_by_source(node_idxs[b], is_padding[b], nbr.shape[1])
+        for node, cells in cells_by_source.items():
+            values = {int(timestamps[b, s]) for s in cells}
+            if len(values) != 1:
                 errors.append(f"b={b}: node {node} has inconsistent timestamps")
-        for s in np.flatnonzero(~is_padding[b]):
+            node_timestamps[node] = (
+                next(iter(values)) if len(values) == 1 else missing_timestamp
+            )
+        present = set(cells_by_source)
+        for node, cells in cells_by_source.items():
+            s = cells[0]
             for k in range(F):
                 parent = int(nbr[b, s, k])
-                parent_ts = node_timestamps.get(parent)
-                if parent_ts is not None and parent_ts > target_ts:
+                if any(int(nbr[b, other, k]) != parent for other in cells[1:]):
+                    errors.append(f"b={b}: node {node} has inconsistent parent slot {k}")
+                if parent < 0 or parent not in present:
+                    continue
+                parent_ts = node_timestamps[parent]
+                counts["comparisons"] += 1
+                target_missing = target_ts == missing_timestamp
+                parent_missing = parent_ts == missing_timestamp
+                counts["missing_target"] += int(target_missing)
+                counts["missing_parent"] += int(parent_missing)
+                counts["missing_both"] += int(target_missing and parent_missing)
+                if target_missing or parent_missing:
+                    counts["unknown"] += 1
+                    continue
+                counts["checked"] += 1
+                if parent_ts > target_ts:
+                    counts["known_violations"] += 1
                     errors.append(
                         f"b={b} s={s} k={k}: parent {parent} timestamp "
                         f"{parent_ts} exceeds target timestamp {target_ts}"
                     )
-    return errors
+                else:
+                    counts["valid"] += 1
+        for key in fields:
+            result[key] += counts[key]
+    result["errors"] = errors
+    return result
+
+
+def temporal_parent_violations(nbr, node_idxs, timestamps, is_padding, is_targets):
+    """Return known temporal/malformed-row errors, deduplicated by source slot.
+
+    An empty list is not proof of complete validity: use
+    ``summarize_temporal_status`` to quantify missing timestamp comparisons.
+    """
+    return summarize_temporal_status(
+        nbr, node_idxs, timestamps, is_padding, is_targets
+    )["errors"]
 
 
 def assert_structural_invariants(
@@ -326,6 +406,19 @@ def assert_structural_invariants(
     # Missing/out-of-context FK slots must stay missing.
     if not np.array_equal(base_nbr >= 0, new_nbr >= 0):
         errs.append("present/absent slot pattern changed")
+
+    for b in range(B):
+        present = _present_nodes(node_idxs[b], is_padding[b])
+        cells_by_source = _cells_by_source(node_idxs[b], is_padding[b], base_nbr.shape[1])
+        for source, cells in cells_by_source.items():
+            rep = cells[0]
+            for slot in range(base_nbr.shape[2]):
+                if any(new_nbr[b, cell, slot] != new_nbr[b, rep, slot] for cell in cells[1:]):
+                    errs.append(f"b={b} source={source} slot={slot}: inconsistent rewired FK copies")
+                for cell in cells:
+                    parent = int(base_nbr[b, cell, slot])
+                    if (parent < 0 or parent not in present or rel[b, cell, slot] < 0) and new_nbr[b, cell, slot] != parent:
+                        errs.append(f"b={b} s={cell} k={slot}: ineligible FK slot changed")
 
     # A source row must not become its own FK parent.
     for b in range(B):
@@ -421,6 +514,8 @@ def summarize_query_exposure(
         "context_token_counts": (~is_padding).sum(axis=1, dtype=np.int64),
         "eligible_edges": np.zeros(B, dtype=np.int64),
         "changed_edges": np.zeros(B, dtype=np.int64),
+        "max_changed_edges": np.zeros(B, dtype=np.int64),
+        "requested_strength": np.zeros(B, dtype=float),
         "singleton_edges": np.zeros(B, dtype=np.int64),
         "unrewirable_edges": np.zeros(B, dtype=np.int64),
         "unrewirable_strata": np.zeros(B, dtype=np.int64),
@@ -430,6 +525,7 @@ def summarize_query_exposure(
         "relation_ids": [],
         "relation_eligible_edges": [],
         "relation_changed_edges": [],
+        "relation_max_changed_edges": [],
         "relation_singleton_edges": [],
         "relation_unrewirable_edges": [],
         "relation_unrewirable_strata": [],
@@ -438,6 +534,8 @@ def summarize_query_exposure(
         for key in (
             "eligible_edges",
             "changed_edges",
+            "max_changed_edges",
+            "requested_strength",
             "singleton_edges",
             "unrewirable_edges",
             "unrewirable_strata",
@@ -464,6 +562,7 @@ def summarize_query_exposure(
             for key in (
                 "eligible_edges",
                 "changed_edges",
+                "max_changed_edges",
                 "singleton_edges",
                 "unrewirable_edges",
                 "unrewirable_strata",
@@ -474,6 +573,7 @@ def summarize_query_exposure(
         "relation_ids",
         "relation_eligible_edges",
         "relation_changed_edges",
+        "relation_max_changed_edges",
         "relation_singleton_edges",
         "relation_unrewirable_edges",
         "relation_unrewirable_strata",

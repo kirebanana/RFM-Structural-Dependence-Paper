@@ -46,3 +46,24 @@ def test_temporal_check_reports_known_future_parent_only():
     errors = temporal_parent_violations(nbr, node_idxs, timestamps, padding, targets)
 
     assert errors == ["b=0 s=0 k=0: parent 11 timestamp 11 exceeds target timestamp 10"]
+
+
+def test_repeated_source_cells_cannot_receive_inconsistent_fk_parents():
+    nodes = np.array([[10, 10, 11, 11, 12, 13]])
+    pad = np.zeros_like(nodes, dtype=bool)
+    rel = np.array([[[7], [7], [7], [7], [-1], [-1]]])
+    base = np.array([[[12], [12], [13], [13], [-1], [-1]]])
+    new = np.array([[[12], [13], [12], [13], [-1], [-1]]])
+    # Cell-weighted multisets and per-token key counts still match in this case.
+    errors = assert_structural_invariants(base, new, rel, nodes, pad)
+    assert any("inconsistent rewired FK copies" in error for error in errors)
+
+
+def test_out_of_context_parent_slots_are_held_fixed_even_when_counts_match():
+    nodes = np.array([[10, 11]])
+    pad = np.zeros_like(nodes, dtype=bool)
+    rel = np.array([[[7], [-1]]])
+    base = np.array([[[99], [-1]]])
+    new = np.array([[[98], [-1]]])
+    errors = assert_structural_invariants(base, new, rel, nodes, pad)
+    assert any("ineligible FK slot changed" in error for error in errors)
