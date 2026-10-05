@@ -374,8 +374,8 @@ def test_mismatched_relation_id_array_cannot_pass_exposure_reconciliation():
 def test_corrupt_temporal_accounting_cannot_be_reported_as_passed(monkeypatch):
     original = validation.summarize_temporal_status
 
-    def missing_comparison(*args):
-        status = original(*args)
+    def missing_comparison(*args, **kwargs):
+        status = original(*args, **kwargs)
         status["checked"] = 0  # Lose a comparison without declaring it unknown.
         return status
 

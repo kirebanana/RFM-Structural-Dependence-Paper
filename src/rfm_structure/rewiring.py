@@ -21,6 +21,7 @@ MAX_F2P_NBRS = 5
 TEMPORAL_FIELDS = (
     "comparisons", "checked", "valid", "known_violations", "unknown",
     "missing_target", "missing_parent", "missing_both",
+    "declared_timeless",
 )
 
 
@@ -303,13 +304,14 @@ def attention_fanout_counts(node_idxs, nbr, is_padding):
     return {"feat": feat, "nbr": nbr_count}
 
 
-def summarize_temporal_status(nbr, node_idxs, timestamps, is_padding, is_targets):
+def summarize_temporal_status(nbr, node_idxs, timestamps, is_padding, is_targets, timeless_ranges=()):
     """Count in-context parent comparisons once per source-node/FK-slot.
 
     Callers must filter evaluator phantoms first. Unknown timestamps are
     ``i32::MIN``. Missing-target and missing-parent counts overlap; subtract
     missing-both to obtain unknown. Checked includes known violations:
-    comparisons = checked + unknown, checked = valid + known_violations.
+    comparisons = checked + unknown + declared_timeless. Declared timeless
+    parent ranges must come from source schema metadata, not missing values.
     Repeated cells must agree on timestamps and parent slots. No timestamp
     is inferred from context membership or another row.
     """
@@ -349,7 +351,11 @@ def summarize_temporal_status(nbr, node_idxs, timestamps, is_padding, is_targets
                 parent_ts = node_timestamps[parent]
                 counts["comparisons"] += 1
                 target_missing = target_ts == missing_timestamp
-                parent_missing = parent_ts == missing_timestamp
+                timeless = any(start <= parent < stop for start, stop in timeless_ranges)
+                if timeless and not target_missing:
+                    counts["declared_timeless"] += 1
+                    continue
+                parent_missing = parent_ts == missing_timestamp and not timeless
                 counts["missing_target"] += int(target_missing)
                 counts["missing_parent"] += int(parent_missing)
                 counts["missing_both"] += int(target_missing and parent_missing)
@@ -391,11 +397,14 @@ def assert_structural_invariants(
     registry=None,
     timestamps=None,
     is_targets=None,
+    enforce_fanout=True,
 ):
     """Return errors when rewiring breaks a checked property.
 
-    Checks FK-slot presence, self-links, parent multisets per (sampled context,
-    relation), distinct parents per cell, and RT key counts per token. With
+    Checks FK-slot presence, self-links and parent multisets per (sampled context,
+    relation). Strict mode additionally requires unchanged token key counts and
+    distinct parents. Incidence experiments set enforce_fanout=False and record
+    those changes as diagnostics instead. With
     timestamps and target flags, also checks known future-parent links in both
     clean and rewired inputs. The reserved ``registry`` is not used; this does
     not check database-wide FK validity or unknown timestamps.
@@ -433,16 +442,17 @@ def assert_structural_invariants(
                     errs.append(f"self-link created at b={b} s={s} k={k}")
                     break
 
-    # Preserve each FK relation's parent instances within each sampled context.
+    # A source row may occupy several cells, but each FK slot is one edge
+    # instance. Counting every cell would incorrectly weight the parent multiset
+    # by the source row's sampled column count.
     base_ms = defaultdict(lambda: defaultdict(int))
     new_ms = defaultdict(lambda: defaultdict(int))
     for b in range(B):
         pad = is_padding[b]
-        pm = ~pad
         present = _present_nodes(node_idxs[b], pad)
-        for s in range(base_nbr.shape[1]):
-            if not pm[s]:
-                continue
+        cells_by_source = _cells_by_source(node_idxs[b], pad, base_nbr.shape[1])
+        for cells in cells_by_source.values():
+            s = cells[0]
             for k in range(base_nbr.shape[2]):
                 r = int(rel[b, s, k])
                 if r < 0:
@@ -461,14 +471,14 @@ def assert_structural_invariants(
     # Duplicated FK targets count once toward a cell's distinct parent set.
     e_base = effective_parent_set_sizes(base_nbr, node_idxs, is_padding)
     e_new = effective_parent_set_sizes(new_nbr, node_idxs, is_padding)
-    if not np.array_equal(e_base, e_new):
+    if enforce_fanout and not np.array_equal(e_base, e_new):
         errs.append("effective parent-set size per cell changed")
 
     # Match RT's number of keys per token, not the identities of those keys.
     base_fanout = attention_fanout_counts(node_idxs, base_nbr, is_padding)
     new_fanout = attention_fanout_counts(node_idxs, new_nbr, is_padding)
     for name in ("feat", "nbr"):
-        if not np.array_equal(base_fanout[name], new_fanout[name]):
+        if enforce_fanout and not np.array_equal(base_fanout[name], new_fanout[name]):
             errs.append(f"{name} attention fanout changed per token")
 
     # Check both arms: a sampled parent may already be dated after the query.

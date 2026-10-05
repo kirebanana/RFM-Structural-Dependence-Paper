@@ -1,0 +1,182 @@
+{
+  "status": "complete",
+  "complete": true,
+  "inference_ran": true,
+  "contexts": {
+    "48": "passed",
+    "128": "passed"
+  },
+  "evidence_kind": "real",
+  "availability_policy": {
+    "version": "query_available_incidence_v1",
+    "dataset": "rel-f1",
+    "cutoff_rule": "temporal rows <= query; support label timestamp + horizon <= query",
+    "timeless_rule": "explicit source manifest time_col=null; benchmark static covariates",
+    "fanout_rule": "measured consequence of incidence, not a preservation gate",
+    "refill_removed_cells": false,
+    "tables": [
+      {
+        "table": "driver-top3:Val",
+        "start": 121076,
+        "stop": 121664,
+        "time_col": "date",
+        "label_column": 22,
+        "horizon_seconds": 2592000
+      },
+      {
+        "table": "qualifying:Db",
+        "start": 26486,
+        "stop": 36301,
+        "time_col": "date",
+        "label_column": null,
+        "horizon_seconds": 0
+      },
+      {
+        "table": "drivers:Db",
+        "start": 25629,
+        "stop": 26486,
+        "time_col": null,
+        "label_column": null,
+        "horizon_seconds": 0
+      },
+      {
+        "table": "driver-position:Val",
+        "start": 118498,
+        "stop": 118997,
+        "time_col": "date",
+        "label_column": 34,
+        "horizon_seconds": 5184000
+      },
+      {
+        "table": "standings:Db",
+        "start": 63482,
+        "stop": 97606,
+        "time_col": "date",
+        "label_column": null,
+        "horizon_seconds": 0
+      },
+      {
+        "table": "driver-dnf:Train",
+        "start": 98308,
+        "stop": 109719,
+        "time_col": "date",
+        "label_column": 2687,
+        "horizon_seconds": 2592000
+      },
+      {
+        "table": "constructors:Db",
+        "start": 25418,
+        "stop": 25629,
+        "time_col": null,
+        "label_column": null,
+        "horizon_seconds": 0
+      },
+      {
+        "table": "driver-top3:Train",
+        "start": 119723,
+        "stop": 121076,
+        "time_col": "date",
+        "label_column": 22,
+        "horizon_seconds": 2592000
+      },
+      {
+        "table": "results:Db",
+        "start": 37402,
+        "stop": 63482,
+        "time_col": "date",
+        "label_column": null,
+        "horizon_seconds": 0
+      },
+      {
+        "table": "constructor_standings:Db",
+        "start": 12367,
+        "stop": 25418,
+        "time_col": "date",
+        "label_column": null,
+        "horizon_seconds": 0
+      },
+      {
+        "table": "driver-top3:Test",
+        "start": 118997,
+        "stop": 119723,
+        "time_col": "date",
+        "label_column": 22,
+        "horizon_seconds": 2592000
+      },
+      {
+        "table": "circuits:Db",
+        "start": 0,
+        "stop": 77,
+        "time_col": null,
+        "label_column": null,
+        "horizon_seconds": 0
+      },
+      {
+        "table": "driver-position:Train",
+        "start": 111045,
+        "stop": 118498,
+        "time_col": "date",
+        "label_column": 34,
+        "horizon_seconds": 5184000
+      },
+      {
+        "table": "constructor_results:Db",
+        "start": 77,
+        "stop": 12367,
+        "time_col": "date",
+        "label_column": null,
+        "horizon_seconds": 0
+      },
+      {
+        "table": "races:Db",
+        "start": 36301,
+        "stop": 37402,
+        "time_col": "date",
+        "label_column": null,
+        "horizon_seconds": 0
+      },
+      {
+        "table": "driver-dnf:Val",
+        "start": 109719,
+        "stop": 110285,
+        "time_col": "date",
+        "label_column": 2687,
+        "horizon_seconds": 2592000
+      },
+      {
+        "table": "driver-dnf:Test",
+        "start": 97606,
+        "stop": 98308,
+        "time_col": "date",
+        "label_column": 2687,
+        "horizon_seconds": 2592000
+      },
+      {
+        "table": "driver-position:Test",
+        "start": 110285,
+        "stop": 111045,
+        "time_col": "date",
+        "label_column": 34,
+        "horizon_seconds": 5184000
+      }
+    ],
+    "source_manifests": {
+      "dataset_manifest": {
+        "bytes": 1196,
+        "sha256": "ddf427fcdb7b35b4363834b167e1d399615fdf41b9f589f54842f484c65a8f9d"
+      },
+      "driver-dnf": {
+        "bytes": 787,
+        "sha256": "f2f77d17e8737246d0be482dd4bef13de1395db9ce0bc79ecf3c6d430e6aa64a"
+      },
+      "driver-position": {
+        "bytes": 752,
+        "sha256": "9c692d022e9b1b9d7524bc82dc7a0f4cf039817598de84b5a7dad0baa6947227"
+      },
+      "driver-top3": {
+        "bytes": 827,
+        "sha256": "c3da8e2eca1489b1f8b08410553e3d2619a68ca4e210f1f13c2d5cdec2f980ad"
+      }
+    }
+  }
+}

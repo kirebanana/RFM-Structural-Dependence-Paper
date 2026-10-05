@@ -1,0 +1,504 @@
+diff --git a/experiments/run_clean_rewire.py b/experiments/run_clean_rewire.py
+index 8849c90..b0f09dc 100644
+--- a/experiments/run_clean_rewire.py
++++ b/experiments/run_clean_rewire.py
+@@ -17 +17,5 @@ import numpy as np
+-from rfm_structure.data import load_expected_target_ids, load_relation_index
++from rfm_structure.data import (
++    load_availability_policy,
++    load_expected_target_ids,
++    load_relation_index,
++)
+@@ -28,0 +33,2 @@ from rfm_structure.validation import (
++    attach_availability,
++    available_context,
+@@ -60 +66 @@ class BaseWrap:
+-    def __init__(self, inner, holder, seed):
++    def __init__(self, inner, holder, seed, inference_batch_size=None):
+@@ -63,0 +70 @@ class BaseWrap:
++        self.inference_batch_size = inference_batch_size
+@@ -71,0 +79,17 @@ class BaseWrap:
++        policy = getattr(self.holder, "availability_policy", None)
++        counts = None
++        if policy:
++            real, counts = available_context(real, policy)
++            padding = batch["is_padding"]
++            if hasattr(padding, "detach"):
++                import torch
++
++                padding = padding.clone()
++                padding[self.holder.batch_mask] = torch.from_numpy(real["is_padding"]).to(padding.device)
++            else:
++                padding = padding.copy()
++                padding[self.holder.batch_mask] = real["is_padding"]
++            # Common availability preparation, before either arm. The evaluator
++            # still receives unchanged target IDs and labels; only context cells
++            # unavailable at query time are masked in every condition.
++            batch["is_padding"] = padding
+@@ -77 +101,4 @@ class BaseWrap:
+-        self.record(rewire_and_validate_batch(real, self.seed, 0.0))
++        self.holder.availability_counts = counts
++        evidence = rewire_and_validate_batch(real, self.seed, 0.0, policy)
++        attach_availability(evidence["exposure"], counts)
++        self.record(evidence)
+@@ -81,3 +108,30 @@ class BaseWrap:
+-        """Count the forward and ensure prediction leaves sampled inputs intact."""
+-        self.holder.forward_calls += 1
+-        predictions = self.inner.predict(batch, eval_ctx_sizes, device, task, bool_as_num)
++        """Run optional microbatches without resampling contexts or rematching links.
++
++        Matching and validation already happened on the complete sampled batch.
++        Only model execution is split, so batch size cannot change rewiring RNG
++        or query content. Phantom predictions are restored for the evaluator.
++        """
++        if self.inference_batch_size is None:
++            self.holder.forward_calls += 1
++            predictions = self.inner.predict(batch, eval_ctx_sizes, device, task, bool_as_num)
++        else:
++            positions = np.flatnonzero(self.holder.batch_mask)
++            predictions = {}
++            for start in range(0, len(positions), self.inference_batch_size):
++                indices = positions[start:start + self.inference_batch_size]
++                chunk = {key: value[indices] for key, value in batch.items()}
++                before = batch_fingerprint(numpy_batch(chunk))
++                self.holder.forward_calls += 1
++                output = self.inner.predict(chunk, eval_ctx_sizes, device, task, bool_as_num)
++                if batch_fingerprint(numpy_batch(chunk)) != before:
++                    raise ValueError("model prediction mutated its sampled input")
++                for ctx, scores in output.items():
++                    if scores.shape != (len(indices),):
++                        raise ValueError("microbatch prediction shape differs from query count")
++                    if ctx not in predictions:
++                        predictions[ctx] = (
++                            scores.new_zeros(len(self.holder.batch_mask))
++                            if hasattr(scores, "new_zeros")
++                            else np.zeros(len(self.holder.batch_mask), dtype=scores.dtype)
++                        )
++                    predictions[ctx][indices] = scores
+@@ -100,2 +154,2 @@ class RewireWrap(BaseWrap):
+-    def __init__(self, inner, seed, alpha, holder):
+-        super().__init__(inner, holder, seed)
++    def __init__(self, inner, seed, alpha, holder, inference_batch_size=None):
++        super().__init__(inner, holder, seed, inference_batch_size)
+@@ -109 +163,2 @@ class RewireWrap(BaseWrap):
+-        evidence = rewire_and_validate_batch(real, self.seed, self.alpha)
++        evidence = rewire_and_validate_batch(real, self.seed, self.alpha, getattr(self.holder, "availability_policy", None))
++        attach_availability(evidence["exposure"], getattr(self.holder, "availability_counts", None))
+@@ -131 +186 @@ def build_tasks(pre_dir):
+-def dry_run(ev, pre_dir, seeds, out_dir, local_ctx, fractions=None):
++def dry_run(ev, pre_dir, seeds, out_dir, local_ctx, fractions=None, availability_policy=None):
+@@ -143 +198 @@ def dry_run(ev, pre_dir, seeds, out_dir, local_ctx, fractions=None):
+-        report, exposures = validate_batches(loader, expected, seeds, ev.ctx_sizes[0], fractions)
++        report, exposures = validate_batches(loader, expected, seeds, ev.ctx_sizes[0], fractions, availability_policy)
+@@ -171 +226,7 @@ def load_frozen_model(checkpoint_dir, device):
+-    """Load local weights only, after real validation and resource checks."""
++    """Load local BF16 weights for eager CPU or CUDA inference.
++
++    Native BF16 acceleration is not required for the eager path tested on the
++    GTX 1650. Record hardware capabilities instead of imposing an 8 GiB floor;
++    activations depend on inference microbatch size and runtime failures remain
++    fatal. Convert on CPU first to avoid temporary FP32 weights on the GPU.
++    """
+@@ -181,11 +242,7 @@ def load_frozen_model(checkpoint_dir, device):
+-    if device != "cuda" or not torch.cuda.is_available():
+-        raise ValueError("real inference requires a suitable CUDA runtime; CPU validation remains available")
+-    capability = torch.cuda.get_device_capability()
+-    if capability[0] < 8:
+-        raise ValueError("insufficient CUDA capability for RT bfloat16 inference")
+-    # A preceding context can leave unoccupied allocator memory reserved.
+-    torch.cuda.empty_cache()
+-    free, total = torch.cuda.mem_get_info()
+-    required = max(8 * 2**30, 3 * weights.stat().st_size)
+-    if free < required:
+-        raise ValueError("insufficient CUDA capability/free memory for RT bfloat16 inference")
++    if device not in ("cpu", "cuda"):
++        raise ValueError("inference device must be cpu or cuda")
++    if device == "cuda":
++        if not torch.cuda.is_available():
++            raise ValueError("requested CUDA runtime is unavailable")
++        # Release unused allocator reservations from the preceding context.
++        torch.cuda.empty_cache()
+@@ -196 +253,16 @@ def load_frozen_model(checkpoint_dir, device):
+-    model = RelationalTransformer.from_pretrained(str(checkpoint), device=device).to(torch.bfloat16)
++    model = RelationalTransformer.from_pretrained(str(checkpoint), device="cpu", compile=False).to(torch.bfloat16)
++    hardware = {"device": "cpu", "capability": None}
++    if device == "cuda":
++        free, total = torch.cuda.mem_get_info()
++        model_bytes = sum(parameter.numel() * parameter.element_size() for parameter in model.parameters())
++        if free < model_bytes:
++            raise ValueError("insufficient free CUDA memory even for BF16 model parameters")
++        hardware = {
++            "device": torch.cuda.get_device_name(),
++            "capability": list(torch.cuda.get_device_capability()),
++            "native_bf16": torch.cuda.is_bf16_supported(including_emulation=False),
++            "bf16_with_emulation": torch.cuda.is_bf16_supported(including_emulation=True),
++            "free_vram_bytes_before_load": free,
++            "total_vram_bytes": total,
++        }
++    model = model.to(device)
+@@ -206,2 +278 @@ def load_frozen_model(checkpoint_dir, device):
+-                      "device": torch.cuda.get_device_name(), "capability": list(capability),
+-                      "free_vram_bytes_before_load": free, "total_vram_bytes": total}
++                       "dtype": "bfloat16", "execution": "eager", **hardware}
+@@ -211 +282,2 @@ def run(ev, pre_dir, seeds, out_dir, device, local_ctx, *, fractions=(0.0, 0.5,
+-        validation_report=None, checkpoint_dir=None, model_factory=None, provenance=None):
++         validation_report=None, checkpoint_dir=None, model_factory=None, provenance=None,
++         inference_batch_size=None):
+@@ -230,0 +303,3 @@ def run(ev, pre_dir, seeds, out_dir, device, local_ctx, *, fractions=(0.0, 0.5,
++        if inference_batch_size is not None and inference_batch_size < 1:
++            raise ValueError("inference batch size must be positive")
++        manifest["inference_batch_size"] = inference_batch_size
+@@ -251 +326,3 @@ def run(ev, pre_dir, seeds, out_dir, device, local_ctx, *, fractions=(0.0, 0.5,
+-        holder = SimpleNamespace(batch=None, batch_index=0, forward_calls=0, fingerprints=validation_report["batch_fingerprints"])
++        holder = SimpleNamespace(batch=None, batch_index=0, forward_calls=0,
++                                 fingerprints=validation_report["batch_fingerprints"],
++                                 availability_policy=validation_report.get("availability_policy"))
+@@ -253 +330,2 @@ def run(ev, pre_dir, seeds, out_dir, device, local_ctx, *, fractions=(0.0, 0.5,
+-        wrappers = [(name, BaseWrap(model, holder, seed) if alpha == 0 else RewireWrap(model, seed, alpha, holder))
++        wrappers = [(name, BaseWrap(model, holder, seed, inference_batch_size) if alpha == 0
++                     else RewireWrap(model, seed, alpha, holder, inference_batch_size))
+@@ -305 +383,2 @@ def execute_matrix(evaluators, pre_dir, seeds, fractions, out_dir, *, dry_only=T
+-                   checkpoint_dir=None, device="cuda", model_factory=None, provenance=None):
++                    checkpoint_dir=None, device="cuda", model_factory=None, provenance=None,
++                    inference_batch_size=None, availability_policy=None):
+@@ -311 +390,2 @@ def execute_matrix(evaluators, pre_dir, seeds, fractions, out_dir, *, dry_only=T
+-              "provenance": provenance or {}, "evidence_kind": "synthetic_test" if model_factory else "validation_only" if dry_only else "real"}
++             "provenance": provenance or {}, "availability_policy": availability_policy,
++             "evidence_kind": "synthetic_test" if model_factory else "validation_only" if dry_only else "real"}
+@@ -318 +398 @@ def execute_matrix(evaluators, pre_dir, seeds, fractions, out_dir, *, dry_only=T
+-            dry_run(ev, pre_dir, seeds, directory, ctx // 2, fractions)
++            dry_run(ev, pre_dir, seeds, directory, ctx // 2, fractions, availability_policy)
+@@ -337 +417,2 @@ def execute_matrix(evaluators, pre_dir, seeds, fractions, out_dir, *, dry_only=T
+-                validation_report=validated[ctx], checkpoint_dir=checkpoint_dir, model_factory=model_factory, provenance=provenance)
++                validation_report=validated[ctx], checkpoint_dir=checkpoint_dir, model_factory=model_factory,
++                provenance=provenance, inference_batch_size=inference_batch_size)
+@@ -362,0 +444,3 @@ def main():
++    parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
++    parser.add_argument("--inference-batch-size", type=int, default=8,
++                        help="real queries per model forward; does not change sampled contexts or matching")
+@@ -369,0 +454,2 @@ def main():
++        if args.inference_batch_size < 1:
++            raise ValueError("inference batch size must be positive")
+@@ -392,0 +479,6 @@ def main():
++        availability_policy = load_availability_policy(pre_dir)
++        device = "cpu"
++        if not args.dry_run:
++            import torch
++
++            device = ("cuda" if torch.cuda.is_available() else "cpu") if args.device == "auto" else args.device
+@@ -394 +486 @@ def main():
+-                       device="cpu" if args.dry_run else "cuda", ctx_size=ctx, local_ctx_size=ctx // 2,
++                       device=device, ctx_size=ctx, local_ctx_size=ctx // 2,
+@@ -397 +489,2 @@ def main():
+-                                checkpoint_dir=args.checkpoint_dir, provenance=provenance)
++                                checkpoint_dir=args.checkpoint_dir, provenance=provenance, device=device,
++                                inference_batch_size=args.inference_batch_size, availability_policy=availability_policy)
+diff --git a/pyproject.toml b/pyproject.toml
+index 96b6d14..4fbbced 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -13,0 +14 @@ dependencies = [
++  "PyYAML>=6,<7",
+diff --git a/src/rfm_structure/analysis.py b/src/rfm_structure/analysis.py
+index 1a858bd..46443f7 100644
+--- a/src/rfm_structure/analysis.py
++++ b/src/rfm_structure/analysis.py
+@@ -69,0 +70 @@ def analyze_matrix(root, *, allow_test_artifacts=False):
++    first_checkpoint = None
+@@ -86,0 +88,9 @@ def analyze_matrix(root, *, allow_test_artifacts=False):
++        if manifest["evidence_kind"] == "real":
++            policy = validation.get("availability_policy")
++            if not policy or policy["version"] != "query_available_incidence_v1" or policy != matrix.get("availability_policy"):
++                raise ValueError("real analysis requires the recorded common availability/incidence policy")
++            checkpoint = manifest["checkpoint_provenance"]
++            identity = (checkpoint["weights"]["sha256"], checkpoint["config"]["sha256"])
++            if first_checkpoint is not None and identity != first_checkpoint:
++                raise ValueError("checkpoint differs across contexts")
++            first_checkpoint = identity
+@@ -121 +131,3 @@ def analyze_matrix(root, *, allow_test_artifacts=False):
+-                   "timestamp_unknowns": validation["per_arm"][name]["temporal"]["unknown"]}
++                    "timestamp_unknowns": validation["per_arm"][name]["temporal"]["unknown"]}
++            row["fanout_diagnostics"] = validation["per_arm"][name].get("fanout_totals", {})
++            row["availability_filter_totals"] = validation.get("availability_totals", {})
+@@ -147 +159,2 @@ def analyze_matrix(root, *, allow_test_artifacts=False):
+-            "evidence_kind": "synthetic_test" if allow_test_artifacts else "real",
++             "evidence_kind": "synthetic_test" if allow_test_artifacts else "real",
++             "availability_policy": matrix.get("availability_policy"),
+@@ -150 +163 @@ def analyze_matrix(root, *, allow_test_artifacts=False):
+-                            "Attention fanout checks preserve per-token key counts, not adjacency equality.",
++                             "This is a total FK-incidence effect: per-token fanout/normalization can change and is recorded, not held fixed.",
+@@ -153 +166,3 @@ def analyze_matrix(root, *, allow_test_artifacts=False):
+-                            "Temporal checks cover in-context source-slot FK instances, not database-wide validity.",
++                             "Common filtering masks future rows and unclosed forecast labels without refilling the sampled context.",
++                             "Timeless tables follow explicit benchmark schema metadata, not proof of historical attribute availability.",
++                             "Retained temporal input uses query-time cutoffs and mature rolling support labels; this is not train-only context.",
+@@ -177,0 +193,11 @@ def summary_markdown(analysis):
++    if analysis.get("availability_policy"):
++        lines += ["", "## Availability and incidence policy", "",
++                  f"Policy: `{analysis['availability_policy']['version']}`. Future rows and unclosed forecast labels are masked before every arm; no refill.",
++                  "Fanout changes are part of the measured incidence effect, not a held-fixed control.", "",
++                  "| Context | Future cells masked | Unclosed label cells masked | Original cells |",
++                  "|---|---:|---:|---:|"]
++        for row in analysis["rows"]:
++            if row["requested_strength"] == 0:
++                counts = row["availability_filter_totals"]
++                lines.append(f"| {row['context']} | {counts['removed_future_tokens']} | "
++                             f"{counts['removed_unmatured_label_tokens']} | {counts['original_token_counts']} |")
+diff --git a/src/rfm_structure/data.py b/src/rfm_structure/data.py
+index 25d3faa..7286de7 100644
+--- a/src/rfm_structure/data.py
++++ b/src/rfm_structure/data.py
+@@ -3,0 +4 @@ import json
++import re
+@@ -7,0 +9,2 @@ import numpy as np
++from .provenance import file_identity
++
+@@ -36,0 +40,57 @@ def load_expected_target_ids(pre_dir, task, expected_count):
++
++
++def load_availability_policy(pre_dir, dataset="rel-f1"):
++    """Bind query-time filtering to the local source manifests and node ranges.
++
++    Timelessness comes from an explicit null time_col, never the timestamp
++    sentinel. Forecast-label horizons come from task manifests. Source files
++    must remain locally available; no inference of availability or downloads.
++    """
++    import yaml
++
++    directory = Path(pre_dir) / dataset
++    meta = json.loads((directory / "meta.json").read_text())
++    source = Path(meta["source"])
++    manifest_path = source / "manifest.yaml"
++    schema = yaml.safe_load(manifest_path.read_text())
++    if schema["name"] != dataset:
++        raise ValueError("source manifest dataset differs from preprocessing")
++    tables = json.loads((directory / "table_info.json").read_text())
++    columns = json.loads((directory / "column_index.json").read_text())
++    task_specs = {}
++    identities = {"dataset_manifest": file_identity(manifest_path)}
++    for task in meta["tasks"]:
++        path = source / "tasks" / task["name"] / "manifest.yaml"
++        spec = yaml.safe_load(path.read_text())
++        match = re.fullmatch(r"(\d+) days", str(spec.get("timedelta", "")))
++        if spec["kind"] != "forecast" or not match or not spec.get("time_col"):
++            raise ValueError("availability requires a forecast task with a day-based horizon")
++        task_specs[task["name"]] = spec | {"horizon_seconds": int(match[1]) * 86400}
++        identities[task["name"]] = file_identity(path)
++    ranges = []
++    for name, info in tables.items():
++        table, split = name.rsplit(":", 1)
++        if split == "Db":
++            spec = schema["tables"][table]
++            if "time_col" not in spec:
++                raise ValueError(f"missing explicit time-column metadata for {table}")
++            time_col = spec["time_col"]
++            label_col = None
++            horizon = 0
++        else:
++            spec = task_specs[table]
++            time_col = spec["time_col"]
++            label_col = columns[f"{spec['target_col']} of {table}"]
++            horizon = spec["horizon_seconds"]
++        ranges.append({
++            "table": name, "start": info["node_idx_offset"],
++            "stop": info["node_idx_offset"] + info["num_nodes"],
++            "time_col": time_col, "label_column": label_col, "horizon_seconds": horizon,
++        })
++    return {
++        "version": "query_available_incidence_v1", "dataset": dataset,
++        "cutoff_rule": "temporal rows <= query; support label timestamp + horizon <= query",
++        "timeless_rule": "explicit source manifest time_col=null; benchmark static covariates",
++        "fanout_rule": "measured consequence of incidence, not a preservation gate",
++        "refill_removed_cells": False, "tables": ranges, "source_manifests": identities,
++    }
+diff --git a/src/rfm_structure/rewiring.py b/src/rfm_structure/rewiring.py
+index 8c9885f..c81bcde 100644
+--- a/src/rfm_structure/rewiring.py
++++ b/src/rfm_structure/rewiring.py
+@@ -23,0 +24 @@ TEMPORAL_FIELDS = (
++    "declared_timeless",
+@@ -306 +307 @@ def attention_fanout_counts(node_idxs, nbr, is_padding):
+-def summarize_temporal_status(nbr, node_idxs, timestamps, is_padding, is_targets):
++def summarize_temporal_status(nbr, node_idxs, timestamps, is_padding, is_targets, timeless_ranges=()):
+@@ -312 +313,2 @@ def summarize_temporal_status(nbr, node_idxs, timestamps, is_padding, is_targets
+-    comparisons = checked + unknown, checked = valid + known_violations.
++    comparisons = checked + unknown + declared_timeless. Declared timeless
++    parent ranges must come from source schema metadata, not missing values.
+@@ -352 +354,5 @@ def summarize_temporal_status(nbr, node_idxs, timestamps, is_padding, is_targets
+-                parent_missing = parent_ts == missing_timestamp
++                timeless = any(start <= parent < stop for start, stop in timeless_ranges)
++                if timeless and not target_missing:
++                    counts["declared_timeless"] += 1
++                    continue
++                parent_missing = parent_ts == missing_timestamp and not timeless
+@@ -393,0 +400 @@ def assert_structural_invariants(
++    enforce_fanout=True,
+@@ -397,2 +404,4 @@ def assert_structural_invariants(
+-    Checks FK-slot presence, self-links, parent multisets per (sampled context,
+-    relation), distinct parents per cell, and RT key counts per token. With
++    Checks FK-slot presence, self-links and parent multisets per (sampled context,
++    relation). Strict mode additionally requires unchanged token key counts and
++    distinct parents. Incidence experiments set enforce_fanout=False and record
++    those changes as diagnostics instead. With
+@@ -436 +445,3 @@ def assert_structural_invariants(
+-    # Preserve each FK relation's parent instances within each sampled context.
++    # A source row may occupy several cells, but each FK slot is one edge
++    # instance. Counting every cell would incorrectly weight the parent multiset
++    # by the source row's sampled column count.
+@@ -441 +451,0 @@ def assert_structural_invariants(
+-        pm = ~pad
+@@ -443,3 +453,3 @@ def assert_structural_invariants(
+-        for s in range(base_nbr.shape[1]):
+-            if not pm[s]:
+-                continue
++        cells_by_source = _cells_by_source(node_idxs[b], pad, base_nbr.shape[1])
++        for cells in cells_by_source.values():
++            s = cells[0]
+@@ -464 +474 @@ def assert_structural_invariants(
+-    if not np.array_equal(e_base, e_new):
++    if enforce_fanout and not np.array_equal(e_base, e_new):
+@@ -471 +481 @@ def assert_structural_invariants(
+-        if not np.array_equal(base_fanout[name], new_fanout[name]):
++        if enforce_fanout and not np.array_equal(base_fanout[name], new_fanout[name]):
+diff --git a/src/rfm_structure/validation.py b/src/rfm_structure/validation.py
+index 1eb1659..bdebfc4 100644
+--- a/src/rfm_structure/validation.py
++++ b/src/rfm_structure/validation.py
+@@ -14,0 +15 @@ from .rewiring import (
++    attention_fanout_counts,
+@@ -15,0 +17 @@ from .rewiring import (
++    effective_parent_set_sizes,
+@@ -32,0 +35,65 @@ QUERY_FIELDS = (
++AVAILABILITY_FIELDS = (
++    "original_token_counts", "removed_future_tokens", "removed_unmatured_label_tokens",
++    "declared_timeless_tokens",
++)
++FANOUT_FIELDS = (
++    "feat_changed_tokens", "nbr_changed_tokens", "feat_absolute_delta",
++    "nbr_absolute_delta", "parent_set_changed_tokens",
++)
++
++
++def available_context(batch, policy):
++    """Mask unavailable cells once, before clean/rewired arms; do not refill.
++
++    This is common input preparation, not the structural intervention. Every
++    retained temporal row must have a known time <= the query. Forecast labels
++    need a fully closed outcome window. Explicitly timeless tables are allowed
++    under the benchmark convention; genuinely missing required times fail.
++    """
++    result = dict(batch)
++    padding = batch["is_padding"].copy()
++    nodes = batch["node_idxs"]
++    times = batch["timestamps"].astype(np.int64)
++    present = ~padding
++    targets = batch["is_targets"] & present
++    if not np.all(targets.sum(axis=1) == 1):
++        raise ValueError("availability requires one target per real prediction query")
++    target_positions = targets.argmax(axis=1)
++    cutoffs = times[np.arange(len(nodes)), target_positions][:, None]
++    missing = np.iinfo(np.int32).min
++    if np.any(cutoffs == missing):
++        raise ValueError("prediction query timestamp is missing")
++    classified = np.zeros_like(padding)
++    future = np.zeros_like(padding)
++    immature = np.zeros_like(padding)
++    timeless = np.zeros_like(padding)
++    for info in policy["tables"]:
++        positions = present & (nodes >= info["start"]) & (nodes < info["stop"])
++        classified |= positions
++        if info["time_col"] is None:
++            timeless |= positions
++            continue
++        if np.any(positions & (times == missing)):
++            raise ValueError(f"missing timestamp in temporal table {info['table']}")
++        future |= positions & (times > cutoffs)
++        if info["label_column"] is not None:
++            label_cells = positions & (batch["col_name_idxs"] == info["label_column"]) & ~targets
++            immature |= label_cells & (times + info["horizon_seconds"] > cutoffs)
++    if np.any(present & ~classified):
++        raise ValueError("sampled node has no source-schema availability metadata")
++    if np.any(targets & (future | immature)):
++        raise ValueError("availability must not remove the evaluated target")
++    padding |= future | immature
++    result["is_padding"] = padding
++    return result, {
++        "original_token_counts": present.sum(axis=1, dtype=np.int64),
++        "removed_future_tokens": future.sum(axis=1, dtype=np.int64),
++        "removed_unmatured_label_tokens": (immature & ~future).sum(axis=1, dtype=np.int64),
++        "declared_timeless_tokens": (timeless & ~padding).sum(axis=1, dtype=np.int64),
++    }
++
++
++def attach_availability(exposure, counts):
++    """Persist common filtering counts alongside every arm's query exposure."""
++    if counts is not None:
++        exposure.update({f"availability_{key}": value.copy() for key, value in counts.items()})
+@@ -129 +196 @@ def reconcile_temporal(status, eligible_edges=None):
+-            counts["comparisons"] != counts["checked"] + counts["unknown"]
++            counts["comparisons"] != counts["checked"] + counts["unknown"] + counts["declared_timeless"]
+@@ -195,0 +263,4 @@ def write_exposure_npz(path, batches):
++    fields += tuple(
++        f"{prefix}{key}" for prefix, keys in (("availability_", AVAILABILITY_FIELDS), ("fanout_", FANOUT_FIELDS))
++        for key in keys if batches and f"{prefix}{key}" in batches[0]
++    )
+@@ -273 +344 @@ def capture_evaluator_masks(ev, holder):
+-def rewire_and_validate_batch(base, seed, alpha=1.0):
++def rewire_and_validate_batch(base, seed, alpha=1.0, availability_policy=None):
+@@ -296,0 +368,2 @@ def rewire_and_validate_batch(base, seed, alpha=1.0):
++            timeless_ranges=[(info["start"], info["stop"]) for info in availability_policy["tables"]
++                             if info["time_col"] is None] if availability_policy else (),
+@@ -301,0 +375 @@ def rewire_and_validate_batch(base, seed, alpha=1.0):
++        enforce_fanout=availability_policy is None,
+@@ -310,0 +385,9 @@ def rewire_and_validate_batch(base, seed, alpha=1.0):
++    before = attention_fanout_counts(cap["node_idxs"], cap["f2p_nbr_idxs"], cap["is_padding"])
++    after = attention_fanout_counts(arm["node_idxs"], arm["f2p_nbr_idxs"], arm["is_padding"])
++    for key in ("feat", "nbr"):
++        exposure[f"fanout_{key}_changed_tokens"] = (before[key] != after[key]).sum(axis=1, dtype=np.int64)
++        exposure[f"fanout_{key}_absolute_delta"] = np.abs(after[key] - before[key]).sum(axis=1, dtype=np.int64)
++    exposure["fanout_parent_set_changed_tokens"] = (
++        effective_parent_set_sizes(cap["f2p_nbr_idxs"], cap["node_idxs"], cap["is_padding"])
++        != effective_parent_set_sizes(arm["f2p_nbr_idxs"], arm["node_idxs"], arm["is_padding"])
++    ).sum(axis=1, dtype=np.int64)
+@@ -330 +413 @@ def rewire_and_validate_batch(base, seed, alpha=1.0):
+-def validate_batches(batches, expected_target_ids, seeds, ctx, fractions=None):
++def validate_batches(batches, expected_target_ids, seeds, ctx, fractions=None, availability_policy=None):
+@@ -345 +428,2 @@ def validate_batches(batches, expected_target_ids, seeds, ctx, fractions=None):
+-        "fanout_check": "per-token feature/neighbor key counts, not adjacency equality",
++        "fanout_check": ("record per-token fanout as an incidence effect, not a rejection gate"
++                         if availability_policy else "strict per-token key-count preservation"),
+@@ -355,0 +440,2 @@ def validate_batches(batches, expected_target_ids, seeds, ctx, fractions=None):
++        "availability_policy": availability_policy,
++        "availability_totals": {key: 0 for key in AVAILABILITY_FIELDS},
+@@ -367,0 +454,5 @@ def validate_batches(batches, expected_target_ids, seeds, ctx, fractions=None):
++            availability_counts = None
++            if availability_policy and len(base["node_idxs"]):
++                base, availability_counts = available_context(base, availability_policy)
++                for key in AVAILABILITY_FIELDS:
++                    report["availability_totals"][key] += int(availability_counts[key].sum())
+@@ -389,0 +481,2 @@ def validate_batches(batches, expected_target_ids, seeds, ctx, fractions=None):
++                timeless_ranges=[(info["start"], info["stop"]) for info in availability_policy["tables"]
++                                 if info["time_col"] is None] if availability_policy else (),
+@@ -399 +492,2 @@ def validate_batches(batches, expected_target_ids, seeds, ctx, fractions=None):
+-                evidence = rewire_and_validate_batch(base, seed, alpha)
++                evidence = rewire_and_validate_batch(base, seed, alpha, availability_policy)
++                attach_availability(evidence["exposure"], availability_counts)
+@@ -408,2 +502 @@ def validate_batches(batches, expected_target_ids, seeds, ctx, fractions=None):
+-                for label, error in (("feature", "feat attention fanout changed per token"),
+-                                     ("neighbor", "nbr attention fanout changed per token")):
++                for label, code in (("feature", "feat"), ("neighbor", "nbr")):
+@@ -411 +504,5 @@ def validate_batches(batches, expected_target_ids, seeds, ctx, fractions=None):
+-                    summary[key] = summary[key] is not False and error not in evidence["structural_errors"]
++                    changed = int(evidence["exposure"][f"fanout_{code}_changed_tokens"].sum())
++                    summary[key] = summary[key] is not False and changed == 0
++                summary.setdefault("fanout_totals", {key: 0 for key in FANOUT_FIELDS})
++                for key in FANOUT_FIELDS:
++                    summary["fanout_totals"][key] += int(evidence["exposure"][f"fanout_{key}"].sum())
+diff --git a/uv.lock b/uv.lock
+index 72f2420..fa66120 100644
+--- a/uv.lock
++++ b/uv.lock
+@@ -775,0 +776 @@ dependencies = [
++    { name = "pyyaml" },
+@@ -794,0 +796 @@ requires-dist = [
++    { name = "pyyaml", specifier = ">=6,<7" },

@@ -773,6 +773,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "numpy" },
+    { name = "pyyaml" },
     { name = "scikit-learn" },
     { name = "scipy" },
 ]
@@ -792,6 +793,7 @@ rt = [
 requires-dist = [
     { name = "numpy", specifier = ">=2.0,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
+    { name = "pyyaml", specifier = ">=6,<7" },
     { name = "relational-transformer", marker = "extra == 'rt'", editable = "vendor/relational-transformer" },
     { name = "relbench", marker = "extra == 'rt'", specifier = "==3.0.1" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },

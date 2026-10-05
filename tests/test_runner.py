@@ -128,22 +128,70 @@ def test_last_arm_input_mutation_is_detected_and_failure_is_recorded(runner, tmp
     assert not manifest["complete"]
 
 
-def test_real_loader_rejects_unsuitable_gpu_before_weight_loading(runner, tmp_path, monkeypatch):
+def test_real_loader_rejects_unavailable_cuda_before_weight_loading(runner, tmp_path, monkeypatch):
     checkpoint = tmp_path / "checkpoint"
     checkpoint.mkdir()
     (checkpoint / "config.json").write_text("{}")
     (checkpoint / "model.safetensors").write_bytes(b"test fixture, never loaded")
 
     def forbidden(*args, **kwargs):
-        pytest.fail("weights must not be loaded on unsuitable hardware")
+        pytest.fail("weights must not be loaded when requested CUDA is unavailable")
 
     monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=SimpleNamespace(
-        is_available=lambda: True, get_device_capability=lambda: (6, 1),
-        mem_get_info=lambda: (2**30, 2 * 2**30),
+        is_available=lambda: False,
     )))
     monkeypatch.setitem(sys.modules, "rt", SimpleNamespace(RelationalTransformer=SimpleNamespace(from_pretrained=forbidden)))
-    with pytest.raises(ValueError, match="insufficient CUDA"):
+    with pytest.raises(ValueError, match="CUDA runtime is unavailable"):
         runner["load_frozen_model"](checkpoint, "cuda")
+
+
+@pytest.mark.parametrize("device", ["cuda", "cpu"])
+def test_real_loader_supports_emulated_bf16_and_cpu_first_loading(runner, tmp_path, monkeypatch, device):
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_text("{}")
+    (checkpoint / "model.safetensors").write_bytes(b"test fixture")
+    transitions = []
+    dtype = object()
+    parameter = SimpleNamespace(numel=lambda: 10, element_size=lambda: 2, requires_grad_=lambda _: None)
+
+    class Model:
+        def to(self, value):
+            transitions.append(value)
+            return self
+
+        def eval(self):
+            return self
+
+        def parameters(self):
+            return [parameter]
+
+    def load(path, *, device, compile):
+        assert device == "cpu"
+        assert compile is False
+        return Model()
+
+    original_read = Path.read_text
+    monkeypatch.setattr(Path, "read_text", lambda path, *a, **k:
+                        "MemAvailable: 16000000 kB\n" if str(path) == "/proc/meminfo" else original_read(path, *a, **k))
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(bfloat16=dtype, cuda=SimpleNamespace(
+        is_available=lambda: True, empty_cache=lambda: None,
+        get_device_capability=lambda: (7, 5), get_device_name=lambda: "GTX 1650",
+        mem_get_info=lambda: (512 * 2**20, 4 * 2**30),
+        is_bf16_supported=lambda including_emulation: including_emulation,
+    )))
+    monkeypatch.setitem(sys.modules, "rt", SimpleNamespace(RelationalTransformer=SimpleNamespace(from_pretrained=load)))
+
+    _, provenance = runner["load_frozen_model"](checkpoint, device)
+
+    assert transitions == [dtype, device]
+    assert provenance["execution"] == "eager"
+    if device == "cuda":
+        assert provenance["native_bf16"] is False
+        assert provenance["bf16_with_emulation"] is True
+        assert provenance["total_vram_bytes"] == 4 * 2**30
+    else:
+        assert provenance["device"] == "cpu"
 
 
 @pytest.mark.parametrize("arguments", [
@@ -151,6 +199,7 @@ def test_real_loader_rejects_unsuitable_gpu_before_weight_loading(runner, tmp_pa
     ["--fractions", "0,0.2,1"],
     ["--seeds", "101,101,303"],
     ["--contexts", "48,48"],
+    ["--inference-batch-size", "0"],
 ])
 def test_cli_rejects_invalid_configuration_without_runtime(runner, tmp_path, monkeypatch, arguments):
     monkeypatch.setattr(sys, "argv", ["runner", "--pre-dir", str(tmp_path), "--dry-run", *arguments])
@@ -218,3 +267,77 @@ def test_predictions_receive_rewired_parents_while_queries_and_labels_stay_fixed
         assert np.all(full["preds"] > clean["preds"])
         assert np.any(partial["preds"] == clean["preds"])
         assert np.any(partial["preds"] > clean["preds"])
+
+
+def test_microbatches_preserve_contexts_matching_accounting_and_phantom_shapes(runner):
+    from rfm_structure.validation import batch_fingerprint, real_query_batch
+
+    raw = make_batch([0, 1, 2], slots=5)
+    real, _ = real_query_batch(raw)
+    holder = SimpleNamespace(batch_mask=raw.pop("batch_mask"), batch=None, batch_index=0,
+                             forward_calls=0, fingerprints=[batch_fingerprint(real)])
+    model = FakeModel()
+    base = runner["BaseWrap"](model, holder, 101, inference_batch_size=2)
+    rewired = runner["RewireWrap"](model, 101, 1.0, holder, inference_batch_size=2)
+
+    clean_scores = base.predict(raw, [48], "cpu", None, True)[48]
+    rewired_scores = rewired.predict(raw, [48], "cpu", None, True)[48]
+
+    np.testing.assert_array_equal(clean_scores, [0, 0.001, 0.002, 0, 0])
+    np.testing.assert_array_equal(clean_scores, rewired_scores)
+    assert model.calls == holder.forward_calls == 4
+    assert rewired.stats["eligible_edges"] == 3
+    assert rewired.exposure_batches[0]["target_node_idxs"].tolist() == [0, 1, 2]
+    assert batch_fingerprint(real_query_batch({**raw, "batch_mask": holder.batch_mask})[0]) == holder.fingerprints[0]
+
+
+def test_microbatch_input_mutation_is_rejected(runner):
+    from rfm_structure.validation import batch_fingerprint, real_query_batch
+
+    raw = make_batch([0, 1, 2])
+    real, _ = real_query_batch(raw)
+    holder = SimpleNamespace(batch_mask=raw.pop("batch_mask"), batch=None, batch_index=0,
+                             forward_calls=0, fingerprints=[batch_fingerprint(real)])
+
+    class MutatingModel(FakeModel):
+        def predict(self, batch, *args):
+            scores = super().predict(batch, *args)
+            batch["timestamps"][0, 0] = 123
+            return scores
+
+    wrapper = runner["BaseWrap"](MutatingModel(), holder, 101, inference_batch_size=2)
+    with pytest.raises(ValueError, match="mutated its sampled input"):
+        wrapper.predict(raw, [48], "cpu", None, True)
+
+
+def test_availability_filtered_matrix_replays_identical_exposure_in_microbatches(runner, tmp_path):
+    write_metadata(tmp_path)
+    rules = {"version": "test", "tables": [
+        {"table": "queries", "start": 0, "stop": 702, "time_col": "date",
+         "label_column": 0, "horizon_seconds": 7},
+        {"table": "support", "start": 10000, "stop": 10702, "time_col": "date",
+         "label_column": 0, "horizon_seconds": 7},
+        {"table": "other", "start": 20000, "stop": 120000, "time_col": "date",
+         "label_column": None, "horizon_seconds": 0},
+    ]}
+    evaluators = {48: evaluator(48), 128: evaluator(128)}
+    for ev in evaluators.values():
+        ev.eval_loaders[ev.tasks[0]].batches[0]["timestamps"][0, 11] = 11
+    root = tmp_path / "matrix"
+
+    result = runner["execute_matrix"](
+        evaluators, tmp_path, [101, 202, 303], [0, 0.5, 1], root,
+        dry_only=False, model_factory=FakeModel, inference_batch_size=8,
+        availability_policy=rules,
+    )
+
+    assert result["complete"]
+    for ctx in (48, 128):
+        directory = root / f"ctx{ctx}_lctx{ctx // 2}"
+        manifest = json.loads((directory / "manifest.json").read_text())
+        assert manifest["validation"]["availability_totals"]["removed_future_tokens"] == 1
+        assert manifest["inference_batch_size"] == 8
+        with np.load(directory / "exposure_base.npz") as exposure:
+            assert exposure["availability_removed_future_tokens"].sum() == 1
+            assert exposure["availability_removed_unmatured_label_tokens"].sum() == 702
+            assert exposure["context_token_counts"][0] == 10

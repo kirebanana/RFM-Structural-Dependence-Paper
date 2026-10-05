@@ -36,6 +36,51 @@ def test_parent_multiset_check_handles_padding_and_detects_corruption():
     assert "parent multiset changed for b=0 relation=100" in errors
 
 
+def test_parent_multiset_counts_source_slots_not_repeated_cells():
+    # Source row 10 occupies two cells; source row 11 occupies one. Swapping
+    # their parents preserves two FK edge instances, not the cell-weighted
+    # histogram. Neighbor fanout is allowed to fail independently here.
+    nodes = np.array([[10, 10, 11, 20, 21, -1]], dtype=np.int64)
+    padding = np.array([[False, False, False, False, False, True]])
+    relations = np.array([[[7], [7], [7], [-1], [-1], [-1]]])
+    base = np.array([[[20], [20], [21], [-1], [-1], [-1]]])
+    swapped = np.array([[[21], [21], [20], [-1], [-1], [-1]]])
+
+    errors = assert_structural_invariants(base, swapped, relations, nodes, padding)
+
+    assert not any("parent multiset changed" in error for error in errors)
+    assert "nbr attention fanout changed per token" in errors
+
+    corrupted = swapped.copy()
+    corrupted[0, 2, 0] = 21
+    errors = assert_structural_invariants(base, corrupted, relations, nodes, padding)
+    assert "parent multiset changed for b=0 relation=7" in errors
+
+
+def test_fanout_matches_dense_rt_connectivity_with_duplicate_cells_and_parents():
+    # Use RT's dense connectivity rules as an independent check of the sparse
+    # counter: same-row cells all attend as feature keys, and duplicate FK
+    # slots do not duplicate a neighbor key.
+    nodes = np.array([[10, 10, 11, 20, 20, 21, -1]], dtype=np.int64)
+    padding = np.array([[False, False, False, False, False, False, True]])
+    parents = np.array([[
+        [20, 20], [20, 20], [21, -1], [-1, -1], [-1, -1], [-1, -1], [-1, -1],
+    ]])
+    present_pairs = ~padding[:, :, None] & ~padding[:, None, :]
+    same_row = nodes[:, :, None] == nodes[:, None, :]
+    forward_links = (nodes[:, None, :, None] == parents[:, :, None, :]).any(axis=-1)
+    reverse_links = (nodes[:, :, None, None] == parents[:, None, :, :]).any(axis=-1)
+
+    counts = attention_fanout_counts(nodes, parents, padding)
+
+    np.testing.assert_array_equal(
+        counts["feat"], ((same_row | forward_links) & present_pairs).sum(axis=-1)
+    )
+    np.testing.assert_array_equal(
+        counts["nbr"], (reverse_links & present_pairs).sum(axis=-1)
+    )
+
+
 def test_temporal_check_reports_known_future_parent_only():
     node_idxs = np.array([[10, 11, 12]], dtype=np.int64)
     padding = np.array([[False, False, False]])

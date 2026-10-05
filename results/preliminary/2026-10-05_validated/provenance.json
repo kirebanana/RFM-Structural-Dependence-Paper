@@ -1,0 +1,316 @@
+{
+  "run_id": "preliminary_1791191647758643138",
+  "run_date": "2026-10-05",
+  "raw_run_location": "results/runs/preliminary_1791191647758643138",
+  "raw_evidence_committed": false,
+  "task": "rel-f1/driver-dnf",
+  "evidence_kind": "real",
+  "status": "complete",
+  "complete": true,
+  "inference_ran": true,
+  "source": {
+    "revision": "a2373fb5cff7581d9171b9127a1f1b4f751d6c6e",
+    "worktree_status": [
+      " M README.md",
+      " M docs/METHODOLOGY.md",
+      " M experiments/run_clean_rewire.py",
+      " M pyproject.toml",
+      " M src/rfm_structure/analysis.py",
+      " M src/rfm_structure/data.py",
+      " M src/rfm_structure/rewiring.py",
+      " M src/rfm_structure/validation.py",
+      " M tests/test_invariants.py",
+      " M tests/test_runner.py",
+      " M tests/test_validation.py",
+      " M uv.lock",
+      "?? tests/test_availability.py"
+    ],
+    "source_sha256": "8ca34d3adbf77c628d88413784f3e6411563c8edef2dcb6aae978b6f23f7c421"
+  },
+  "software": {
+    "python": "3.12.13",
+    "numpy": "2.5.3",
+    "scipy": "1.18.1",
+    "scikit-learn": "1.9.1",
+    "torch": "2.13.0",
+    "relbench": "3.0.1",
+    "relational-transformer": "1.1.0"
+  },
+  "sampling": {
+    "context_seed": 0,
+    "shuffle_seed": 0,
+    "embedding_model": "all-MiniLM-L12-v2",
+    "d_text": 384,
+    "tokens_per_gpu": 262144,
+    "bfs_width": 32,
+    "num_walks": 10000,
+    "walk_length": 20,
+    "prefer_latest": true
+  },
+  "preprocessing": {
+    "meta.json": {
+      "bytes": 1442,
+      "sha256": "ebe73f17e3ff2d4a99112c0ace343b9cf49781baf9145015cdf9630327b36dfc"
+    },
+    "table_info.json": {
+      "bytes": 1102,
+      "sha256": "c66454e7849345fce446c626b5c945941f66132ee51250fc3871be57c9afc537"
+    },
+    "column_index.json": {
+      "bytes": 2205,
+      "sha256": "99b2c1fb5c9eeb0e9a9937b2edaf8b634ad8e20502faf0f073d8cf03f25fcc31"
+    },
+    "relation_index.json": {
+      "bytes": 2216,
+      "sha256": "e4b4beca945d366529e380905ab63c16d9416ca4c2c3e407bd5423fdeb0fa0dd"
+    },
+    "nodes.rkyv": {
+      "bytes": 42937128,
+      "sha256": "125aee14d76335aa32ab0a3c55c75e24cf113bbfef8adfd8d87d74317d8f87ae"
+    },
+    "offsets.rkyv": {
+      "bytes": 973336,
+      "sha256": "3f084e580a16ef37b67e9a62de4ac1c94678c509c2d8e5c6f1370e779cba3cb3"
+    },
+    "p2f_adj.rkyv": {
+      "bytes": 6982120,
+      "sha256": "602b423f4a85f3a687e7fb581da3a6daec9446d10508b87aef6159d01547c32b"
+    },
+    "text_emb_all-MiniLM-L12-v2.bin": {
+      "bytes": 2349312,
+      "sha256": "287f5dcfda2958608b8661f2ab3923c02aad630b4a4aa6a7c570b830ed946f89"
+    },
+    "text.json": {
+      "bytes": 33221,
+      "sha256": "da948653ca757f5cb6f4d4c09ac411ab463b6f2a0c3f801095ca103b96ffe94d"
+    }
+  },
+  "availability_policy": {
+    "version": "query_available_incidence_v1",
+    "dataset": "rel-f1",
+    "cutoff_rule": "temporal rows <= query; support label timestamp + horizon <= query",
+    "timeless_rule": "explicit source manifest time_col=null; benchmark static covariates",
+    "fanout_rule": "measured consequence of incidence, not a preservation gate",
+    "refill_removed_cells": false,
+    "tables": [
+      {
+        "table": "driver-top3:Val",
+        "start": 121076,
+        "stop": 121664,
+        "time_col": "date",
+        "label_column": 22,
+        "horizon_seconds": 2592000
+      },
+      {
+        "table": "qualifying:Db",
+        "start": 26486,
+        "stop": 36301,
+        "time_col": "date",
+        "label_column": null,
+        "horizon_seconds": 0
+      },
+      {
+        "table": "drivers:Db",
+        "start": 25629,
+        "stop": 26486,
+        "time_col": null,
+        "label_column": null,
+        "horizon_seconds": 0
+      },
+      {
+        "table": "driver-position:Val",
+        "start": 118498,
+        "stop": 118997,
+        "time_col": "date",
+        "label_column": 34,
+        "horizon_seconds": 5184000
+      },
+      {
+        "table": "standings:Db",
+        "start": 63482,
+        "stop": 97606,
+        "time_col": "date",
+        "label_column": null,
+        "horizon_seconds": 0
+      },
+      {
+        "table": "driver-dnf:Train",
+        "start": 98308,
+        "stop": 109719,
+        "time_col": "date",
+        "label_column": 2687,
+        "horizon_seconds": 2592000
+      },
+      {
+        "table": "constructors:Db",
+        "start": 25418,
+        "stop": 25629,
+        "time_col": null,
+        "label_column": null,
+        "horizon_seconds": 0
+      },
+      {
+        "table": "driver-top3:Train",
+        "start": 119723,
+        "stop": 121076,
+        "time_col": "date",
+        "label_column": 22,
+        "horizon_seconds": 2592000
+      },
+      {
+        "table": "results:Db",
+        "start": 37402,
+        "stop": 63482,
+        "time_col": "date",
+        "label_column": null,
+        "horizon_seconds": 0
+      },
+      {
+        "table": "constructor_standings:Db",
+        "start": 12367,
+        "stop": 25418,
+        "time_col": "date",
+        "label_column": null,
+        "horizon_seconds": 0
+      },
+      {
+        "table": "driver-top3:Test",
+        "start": 118997,
+        "stop": 119723,
+        "time_col": "date",
+        "label_column": 22,
+        "horizon_seconds": 2592000
+      },
+      {
+        "table": "circuits:Db",
+        "start": 0,
+        "stop": 77,
+        "time_col": null,
+        "label_column": null,
+        "horizon_seconds": 0
+      },
+      {
+        "table": "driver-position:Train",
+        "start": 111045,
+        "stop": 118498,
+        "time_col": "date",
+        "label_column": 34,
+        "horizon_seconds": 5184000
+      },
+      {
+        "table": "constructor_results:Db",
+        "start": 77,
+        "stop": 12367,
+        "time_col": "date",
+        "label_column": null,
+        "horizon_seconds": 0
+      },
+      {
+        "table": "races:Db",
+        "start": 36301,
+        "stop": 37402,
+        "time_col": "date",
+        "label_column": null,
+        "horizon_seconds": 0
+      },
+      {
+        "table": "driver-dnf:Val",
+        "start": 109719,
+        "stop": 110285,
+        "time_col": "date",
+        "label_column": 2687,
+        "horizon_seconds": 2592000
+      },
+      {
+        "table": "driver-dnf:Test",
+        "start": 97606,
+        "stop": 98308,
+        "time_col": "date",
+        "label_column": 2687,
+        "horizon_seconds": 2592000
+      },
+      {
+        "table": "driver-position:Test",
+        "start": 110285,
+        "stop": 111045,
+        "time_col": "date",
+        "label_column": 34,
+        "horizon_seconds": 5184000
+      }
+    ],
+    "source_manifests": {
+      "dataset_manifest": {
+        "bytes": 1196,
+        "sha256": "ddf427fcdb7b35b4363834b167e1d399615fdf41b9f589f54842f484c65a8f9d"
+      },
+      "driver-dnf": {
+        "bytes": 787,
+        "sha256": "f2f77d17e8737246d0be482dd4bef13de1395db9ce0bc79ecf3c6d430e6aa64a"
+      },
+      "driver-position": {
+        "bytes": 752,
+        "sha256": "9c692d022e9b1b9d7524bc82dc7a0f4cf039817598de84b5a7dad0baa6947227"
+      },
+      "driver-top3": {
+        "bytes": 827,
+        "sha256": "c3da8e2eca1489b1f8b08410553e3d2619a68ca4e210f1f13c2d5cdec2f980ad"
+      }
+    }
+  },
+  "checkpoint_repo": "stanford-star/rt-plurel",
+  "checkpoint_revision": "2ed96efc8007c57d589a31ceb435eb768491c439",
+  "raw_dataset_repo": "stanford-star/relbench-v1",
+  "raw_dataset_revision": "d8e976fd0a4b78877204bc8dfbcfc9a9f7f48600",
+  "hardware": "NVIDIA GeForce GTX 1650, 4 GiB; eager BF16; inference microbatch 8",
+  "validation": {
+    "48": {
+      "status": "passed",
+      "complete": true,
+      "inference_ready": true,
+      "observed_queries": 702,
+      "unique_targets": 702,
+      "availability_totals": {
+        "original_token_counts": 33696,
+        "removed_future_tokens": 55,
+        "removed_unmatured_label_tokens": 1379,
+        "declared_timeless_tokens": 14509
+      },
+      "base_temporal": {
+        "comparisons": 6749,
+        "checked": 912,
+        "valid": 912,
+        "known_violations": 0,
+        "unknown": 0,
+        "missing_target": 0,
+        "missing_parent": 0,
+        "missing_both": 0,
+        "declared_timeless": 5837
+      }
+    },
+    "128": {
+      "status": "passed",
+      "complete": true,
+      "inference_ready": true,
+      "observed_queries": 702,
+      "unique_targets": 702,
+      "availability_totals": {
+        "original_token_counts": 89856,
+        "removed_future_tokens": 55,
+        "removed_unmatured_label_tokens": 1379,
+        "declared_timeless_tokens": 36430
+      },
+      "base_temporal": {
+        "comparisons": 20250,
+        "checked": 4142,
+        "valid": 4142,
+        "known_violations": 0,
+        "unknown": 0,
+        "missing_target": 0,
+        "missing_parent": 0,
+        "missing_both": 0,
+        "declared_timeless": 16108
+      }
+    }
+  },
+  "per_arm_evidence": "ctx48_lctx24/manifest.json and ctx128_lctx64/manifest.json"
+}

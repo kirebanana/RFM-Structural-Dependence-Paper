@@ -14,7 +14,11 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from rfm_structure.data import load_expected_target_ids, load_relation_index
+from rfm_structure.data import (
+    load_availability_policy,
+    load_expected_target_ids,
+    load_relation_index,
+)
 from rfm_structure.metrics import binary_auroc
 from rfm_structure.provenance import (
     file_identity,
@@ -26,6 +30,8 @@ from rfm_structure.validation import (
     EDGE_FIELDS,
     TEMPORAL_FIELDS,
     assert_held_fixed,
+    attach_availability,
+    available_context,
     batch_fingerprint,
     capture_evaluator_masks,
     configure_complete_evaluation,
@@ -57,10 +63,11 @@ def save_json(path, content):
 class BaseWrap:
     """Check replay identity and record clean exposure before predicting once."""
 
-    def __init__(self, inner, holder, seed):
+    def __init__(self, inner, holder, seed, inference_batch_size=None):
         self.inner = inner
         self.holder = holder
         self.seed = seed
+        self.inference_batch_size = inference_batch_size
         self.stats = {}
         self.exposure_batches = []
 
@@ -69,18 +76,65 @@ class BaseWrap:
 
     def predict(self, batch, eval_ctx_sizes, device, task, bool_as_num):
         real, _ = real_query_batch({**batch, "batch_mask": self.holder.batch_mask})
+        policy = getattr(self.holder, "availability_policy", None)
+        counts = None
+        if policy:
+            real, counts = available_context(real, policy)
+            padding = batch["is_padding"]
+            if hasattr(padding, "detach"):
+                import torch
+
+                padding = padding.clone()
+                padding[self.holder.batch_mask] = torch.from_numpy(real["is_padding"]).to(padding.device)
+            else:
+                padding = padding.copy()
+                padding[self.holder.batch_mask] = real["is_padding"]
+            # Common availability preparation, before either arm. The evaluator
+            # still receives unchanged target IDs and labels; only context cells
+            # unavailable at query time are masked in every condition.
+            batch["is_padding"] = padding
         index = self.holder.batch_index
         if index >= len(self.holder.fingerprints) or batch_fingerprint(real) != self.holder.fingerprints[index]:
             raise ValueError("sampled input differs from the validated batch replay")
         self.holder.batch_index += 1
         self.holder.batch = real
-        self.record(rewire_and_validate_batch(real, self.seed, 0.0))
+        self.holder.availability_counts = counts
+        evidence = rewire_and_validate_batch(real, self.seed, 0.0, policy)
+        attach_availability(evidence["exposure"], counts)
+        self.record(evidence)
         return self.predict_checked(batch, real, eval_ctx_sizes, device, task, bool_as_num)
 
     def predict_checked(self, batch, expected, eval_ctx_sizes, device, task, bool_as_num):
-        """Count the forward and ensure prediction leaves sampled inputs intact."""
-        self.holder.forward_calls += 1
-        predictions = self.inner.predict(batch, eval_ctx_sizes, device, task, bool_as_num)
+        """Run optional microbatches without resampling contexts or rematching links.
+
+        Matching and validation already happened on the complete sampled batch.
+        Only model execution is split, so batch size cannot change rewiring RNG
+        or query content. Phantom predictions are restored for the evaluator.
+        """
+        if self.inference_batch_size is None:
+            self.holder.forward_calls += 1
+            predictions = self.inner.predict(batch, eval_ctx_sizes, device, task, bool_as_num)
+        else:
+            positions = np.flatnonzero(self.holder.batch_mask)
+            predictions = {}
+            for start in range(0, len(positions), self.inference_batch_size):
+                indices = positions[start:start + self.inference_batch_size]
+                chunk = {key: value[indices] for key, value in batch.items()}
+                before = batch_fingerprint(numpy_batch(chunk))
+                self.holder.forward_calls += 1
+                output = self.inner.predict(chunk, eval_ctx_sizes, device, task, bool_as_num)
+                if batch_fingerprint(numpy_batch(chunk)) != before:
+                    raise ValueError("model prediction mutated its sampled input")
+                for ctx, scores in output.items():
+                    if scores.shape != (len(indices),):
+                        raise ValueError("microbatch prediction shape differs from query count")
+                    if ctx not in predictions:
+                        predictions[ctx] = (
+                            scores.new_zeros(len(self.holder.batch_mask))
+                            if hasattr(scores, "new_zeros")
+                            else np.zeros(len(self.holder.batch_mask), dtype=scores.dtype)
+                        )
+                    predictions[ctx][indices] = scores
         after, _ = real_query_batch({**batch, "batch_mask": self.holder.batch_mask})
         if batch_fingerprint(after) != batch_fingerprint(expected):
             raise ValueError("model prediction mutated its sampled input")
@@ -97,8 +151,8 @@ class BaseWrap:
 class RewireWrap(BaseWrap):
     """Only FK parents change; preserve evaluator phantom prediction shapes."""
 
-    def __init__(self, inner, seed, alpha, holder):
-        super().__init__(inner, holder, seed)
+    def __init__(self, inner, seed, alpha, holder, inference_batch_size=None):
+        super().__init__(inner, holder, seed, inference_batch_size)
         self.alpha = alpha
 
     def predict(self, batch, eval_ctx_sizes, device, task, bool_as_num):
@@ -106,7 +160,8 @@ class RewireWrap(BaseWrap):
         assert_held_fixed(self.holder.batch, real)
         if not np.array_equal(self.holder.batch["f2p_nbr_idxs"], real["f2p_nbr_idxs"]):
             raise ValueError("arm did not receive clean FK parents")
-        evidence = rewire_and_validate_batch(real, self.seed, self.alpha)
+        evidence = rewire_and_validate_batch(real, self.seed, self.alpha, getattr(self.holder, "availability_policy", None))
+        attach_availability(evidence["exposure"], getattr(self.holder, "availability_counts", None))
         self.record(evidence)
         full = numpy_batch({"nbr": batch["f2p_nbr_idxs"]})["nbr"]
         full[self.holder.batch_mask] = evidence["batch"]["f2p_nbr_idxs"]
@@ -128,7 +183,7 @@ def build_tasks(pre_dir):
     return tasks
 
 
-def dry_run(ev, pre_dir, seeds, out_dir, local_ctx, fractions=None):
+def dry_run(ev, pre_dir, seeds, out_dir, local_ctx, fractions=None, availability_policy=None):
     """Persist full coverage/evidence; exits 0 passed, 1 failed, 2 uncertain."""
     report_path = Path(out_dir) / "validation.json"
     report = {"status": "in_progress", "complete": False, "inference_ready": False,
@@ -140,7 +195,7 @@ def dry_run(ev, pre_dir, seeds, out_dir, local_ctx, fractions=None):
         expected = load_expected_target_ids(pre_dir, ev.tasks[0], ITEMS_PER_TASK)
         relations = load_relation_index(pre_dir, DB_NAME)
         loader = configure_complete_evaluation(ev, len(expected))
-        report, exposures = validate_batches(loader, expected, seeds, ev.ctx_sizes[0], fractions)
+        report, exposures = validate_batches(loader, expected, seeds, ev.ctx_sizes[0], fractions, availability_policy)
         report.update(db_name=DB_NAME, task_table=TASK_TABLE, pre_dir=str(pre_dir), local_ctx=int(local_ctx),
                       relation_index=relations, eval_bs=int(ev.eval_bs), scheduled_batches=len(loader.dataset),
                       evaluator_batch_cap=None, strength_rule=STRENGTH_RULE)
@@ -168,7 +223,13 @@ def dry_run(ev, pre_dir, seeds, out_dir, local_ctx, fractions=None):
 
 
 def load_frozen_model(checkpoint_dir, device):
-    """Load local weights only, after real validation and resource checks."""
+    """Load local BF16 weights for eager CPU or CUDA inference.
+
+    Native BF16 acceleration is not required for the eager path tested on the
+    GTX 1650. Record hardware capabilities instead of imposing an 8 GiB floor;
+    activations depend on inference microbatch size and runtime failures remain
+    fatal. Convert on CPU first to avoid temporary FP32 weights on the GPU.
+    """
     import torch
     from rt import RelationalTransformer
 
@@ -178,22 +239,33 @@ def load_frozen_model(checkpoint_dir, device):
     weights = checkpoint / config.get("checkpoint_file", "model.safetensors")
     if not weights.is_file():
         raise ValueError("compatible local classification checkpoint weights are required")
-    if device != "cuda" or not torch.cuda.is_available():
-        raise ValueError("real inference requires a suitable CUDA runtime; CPU validation remains available")
-    capability = torch.cuda.get_device_capability()
-    if capability[0] < 8:
-        raise ValueError("insufficient CUDA capability for RT bfloat16 inference")
-    # A preceding context can leave unoccupied allocator memory reserved.
-    torch.cuda.empty_cache()
-    free, total = torch.cuda.mem_get_info()
-    required = max(8 * 2**30, 3 * weights.stat().st_size)
-    if free < required:
-        raise ValueError("insufficient CUDA capability/free memory for RT bfloat16 inference")
+    if device not in ("cpu", "cuda"):
+        raise ValueError("inference device must be cpu or cuda")
+    if device == "cuda":
+        if not torch.cuda.is_available():
+            raise ValueError("requested CUDA runtime is unavailable")
+        # Release unused allocator reservations from the preceding context.
+        torch.cuda.empty_cache()
     available_ram = int(next(line.split()[1] for line in Path("/proc/meminfo").read_text().splitlines()
                              if line.startswith("MemAvailable:"))) * 1024
     if available_ram < max(2 * 2**30, 2 * weights.stat().st_size):
         raise ValueError("insufficient available host RAM for checkpoint loading and RT inference")
-    model = RelationalTransformer.from_pretrained(str(checkpoint), device=device).to(torch.bfloat16)
+    model = RelationalTransformer.from_pretrained(str(checkpoint), device="cpu", compile=False).to(torch.bfloat16)
+    hardware = {"device": "cpu", "capability": None}
+    if device == "cuda":
+        free, total = torch.cuda.mem_get_info()
+        model_bytes = sum(parameter.numel() * parameter.element_size() for parameter in model.parameters())
+        if free < model_bytes:
+            raise ValueError("insufficient free CUDA memory even for BF16 model parameters")
+        hardware = {
+            "device": torch.cuda.get_device_name(),
+            "capability": list(torch.cuda.get_device_capability()),
+            "native_bf16": torch.cuda.is_bf16_supported(including_emulation=False),
+            "bf16_with_emulation": torch.cuda.is_bf16_supported(including_emulation=True),
+            "free_vram_bytes_before_load": free,
+            "total_vram_bytes": total,
+        }
+    model = model.to(device)
     model.eval()
     for parameter in model.parameters():
         parameter.requires_grad_(False)
@@ -203,12 +275,12 @@ def load_frozen_model(checkpoint_dir, device):
                       "local_revision": next((part for index, part in enumerate(checkpoint.parts)
                                               if index and checkpoint.parts[index - 1] == "snapshots"
                                               and len(part) == 40 and all(char in "0123456789abcdef" for char in part)), None),
-                      "device": torch.cuda.get_device_name(), "capability": list(capability),
-                      "free_vram_bytes_before_load": free, "total_vram_bytes": total}
+                       "dtype": "bfloat16", "execution": "eager", **hardware}
 
 
 def run(ev, pre_dir, seeds, out_dir, device, local_ctx, *, fractions=(0.0, 0.5, 1.0),
-        validation_report=None, checkpoint_dir=None, model_factory=None, provenance=None):
+         validation_report=None, checkpoint_dir=None, model_factory=None, provenance=None,
+         inference_batch_size=None):
     """Technically gated inference; factory injection is only for lightweight tests."""
     out_dir = Path(out_dir)
     if validation_report is None:
@@ -228,6 +300,9 @@ def run(ev, pre_dir, seeds, out_dir, device, local_ctx, *, fractions=(0.0, 0.5, 
     holder = None
     try:
         arms = experiment_arms(seeds, fractions)
+        if inference_batch_size is not None and inference_batch_size < 1:
+            raise ValueError("inference batch size must be positive")
+        manifest["inference_batch_size"] = inference_batch_size
         if arms[0][0] != "base":
             raise ValueError("inference requires a clean arm first")
         if validation_report["status"] != "passed" or not validation_report["complete"]:
@@ -248,9 +323,12 @@ def run(ev, pre_dir, seeds, out_dir, device, local_ctx, *, fractions=(0.0, 0.5, 
             if checkpoint_dir is None:
                 raise ValueError("a local checkpoint is required; weights are never implicitly downloaded")
             model, manifest["checkpoint_provenance"] = load_frozen_model(checkpoint_dir, device)
-        holder = SimpleNamespace(batch=None, batch_index=0, forward_calls=0, fingerprints=validation_report["batch_fingerprints"])
+        holder = SimpleNamespace(batch=None, batch_index=0, forward_calls=0,
+                                 fingerprints=validation_report["batch_fingerprints"],
+                                 availability_policy=validation_report.get("availability_policy"))
         capture_evaluator_masks(ev, holder)
-        wrappers = [(name, BaseWrap(model, holder, seed) if alpha == 0 else RewireWrap(model, seed, alpha, holder))
+        wrappers = [(name, BaseWrap(model, holder, seed, inference_batch_size) if alpha == 0
+                     else RewireWrap(model, seed, alpha, holder, inference_batch_size))
                     for name, alpha, seed in arms]
         outputs = list(ev.evaluate_raw([(wrapper, name) for name, wrapper in wrappers], ev.ctx_sizes, with_node_idxs=True))
         if len(outputs) != 1:
@@ -302,20 +380,22 @@ def run(ev, pre_dir, seeds, out_dir, device, local_ctx, *, fractions=(0.0, 0.5, 
 
 
 def execute_matrix(evaluators, pre_dir, seeds, fractions, out_dir, *, dry_only=True,
-                   checkpoint_dir=None, device="cuda", model_factory=None, provenance=None):
+                    checkpoint_dir=None, device="cuda", model_factory=None, provenance=None,
+                    inference_batch_size=None, availability_policy=None):
     """Validate every context before any weight load or model forward."""
     root = Path(out_dir)
     root.mkdir(parents=True, exist_ok=False)
     status = {"status": "in_progress", "complete": False, "contexts": {}, "inference_ran": False,
               "task": f"{DB_NAME}/{TASK_TABLE}", "seeds": list(seeds), "fractions": list(fractions),
-              "provenance": provenance or {}, "evidence_kind": "synthetic_test" if model_factory else "validation_only" if dry_only else "real"}
+             "provenance": provenance or {}, "availability_policy": availability_policy,
+             "evidence_kind": "synthetic_test" if model_factory else "validation_only" if dry_only else "real"}
     save_json(root / "matrix.json", status)
     try:
         validated = {}
         for ctx, ev in evaluators.items():
             directory = root / f"ctx{ctx}_lctx{ctx // 2}"
             directory.mkdir()
-            dry_run(ev, pre_dir, seeds, directory, ctx // 2, fractions)
+            dry_run(ev, pre_dir, seeds, directory, ctx // 2, fractions, availability_policy)
             report = json.loads((directory / "validation.json").read_text())
             validated[ctx] = report
             status["contexts"][str(ctx)] = report["status"]
@@ -334,7 +414,8 @@ def execute_matrix(evaluators, pre_dir, seeds, fractions, out_dir, *, dry_only=T
         for ctx, ev in evaluators.items():
             directory = root / f"ctx{ctx}_lctx{ctx // 2}"
             run(ev, pre_dir, seeds, directory, device, ctx // 2, fractions=fractions,
-                validation_report=validated[ctx], checkpoint_dir=checkpoint_dir, model_factory=model_factory, provenance=provenance)
+                validation_report=validated[ctx], checkpoint_dir=checkpoint_dir, model_factory=model_factory,
+                provenance=provenance, inference_batch_size=inference_batch_size)
         status.update(status="complete", complete=True)
         return status
     except Exception as error:
@@ -360,6 +441,9 @@ def main():
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--pre-dir", required=True)
     parser.add_argument("--checkpoint-dir")
+    parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
+    parser.add_argument("--inference-batch-size", type=int, default=8,
+                        help="real queries per model forward; does not change sampled contexts or matching")
     parser.add_argument("--out-root", default="results/runs")
     args = parser.parse_args()
     try:
@@ -367,6 +451,8 @@ def main():
         seeds = [int(value) for value in args.seeds.split(",")]
         fractions = [float(value) for value in args.fractions.split(",")]
         experiment_arms(seeds, fractions)
+        if args.inference_batch_size < 1:
+            raise ValueError("inference batch size must be positive")
         if len(set(contexts)) != len(contexts) or not contexts or any(ctx not in (48, 128) for ctx in contexts):
             raise ValueError("contexts must be unique values from 48 and 128")
         if args.local_ctx is not None and (args.ctx is None or args.local_ctx != args.ctx // 2):
@@ -390,11 +476,18 @@ def main():
         from rt.eval_utils import build_evaluator
 
         tasks = build_tasks(str(pre_dir))
+        availability_policy = load_availability_policy(pre_dir)
+        device = "cpu"
+        if not args.dry_run:
+            import torch
+
+            device = ("cuda" if torch.cuda.is_available() else "cpu") if args.device == "auto" else args.device
         evaluators = {ctx: build_evaluator(tasks, str(pre_dir), embedding_model="all-MiniLM-L12-v2", d_text=384,
-                       device="cpu" if args.dry_run else "cuda", ctx_size=ctx, local_ctx_size=ctx // 2,
+                       device=device, ctx_size=ctx, local_ctx_size=ctx // 2,
                        items_per_task=ITEMS_PER_TASK, num_workers=0, shuffle_seed=0, context_seed=0) for ctx in contexts}
         status = execute_matrix(evaluators, pre_dir, seeds, fractions, root, dry_only=args.dry_run,
-                                checkpoint_dir=args.checkpoint_dir, provenance=provenance)
+                                checkpoint_dir=args.checkpoint_dir, provenance=provenance, device=device,
+                                inference_batch_size=args.inference_batch_size, availability_policy=availability_policy)
         print(f"[{status['status']}] {root}")
         return 0 if status["complete"] else 2 if status["status"] == "temporal_uncertainty" else 1
     except Exception as error:  # noqa: BLE001 -- persist setup errors without loading weights

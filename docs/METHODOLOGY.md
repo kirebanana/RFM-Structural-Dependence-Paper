@@ -1,176 +1,124 @@
-# Preliminary experiment methodology
+# Methodology
 
-## What is held fixed?
+## Unit of comparison
 
-RT receives a sampled sequence of **cells/tokens**, not the entire database.
-A source row can occupy several cells. A prediction query is one target task
-row; its sampled context includes typed cell values, schema information,
-source IDs, FK parent IDs, target/task flags and timestamps.
+A prediction query is a `driver-dnf` task row: driver identity, query time and
+a binary label for failure to finish in the next 30 days. RT receives a sampled
+sequence of cells/tokens. A database row can contribute several cells; token
+count is not row count. A context also contains labeled task rows as support.
 
-Every arm uses the same query and sampled cells in the same order, including
-their values, labels, timestamps and source IDs. The frozen model is shared
-across arms within a context. The intervention changes only `f2p_nbr_idxs`,
-which determines concrete FK parent identities and therefore relational
-attention connections. `f2p_rel_idxs` identifies the FK relation for matching
-and accounting; it is not an additional learned relation input.
+For each context setting, one frozen RT-PluRel model evaluates a clean condition
+and six corruption conditions (50%/100% requested strengths × seeds 101/202/303).
+All arms use exactly the same 702 target IDs and labels in paired order.
 
-An **eligible FK edge instance** is a `(sampled context, relation, source node,
-FK slot)` with a parent present in that context. Repeated cells representing
-the same source slot count once. A **changed** instance receives a different
-parent node ID. Neither count is a count of prediction queries.
+## Common availability preparation
 
-## Corruption strengths
+Policy **`query_available_incidence_v1`** is applied after sampling, before
+matching or any model forward. It uses the raw dataset/task manifests plus the
+preprocessed node ranges and column IDs:
 
-For each context/relation group, seeded minimum-cost matching reassigns the
-original parent instances while prohibiting self-links and minimizing
-unchanged parent IDs. Duplicate parent IDs remain separate instances in the
-assignment. All copies of a source slot are updated together.
+1. Keep temporal row cells only when `row time <= query time`.
+2. Keep non-target forecast-label cells only when
+   `label-row time + task horizon <= query time`. Driver-DNF's SQL aggregates
+   outcomes in `(query time, query time + 30 days]`, so a past row date alone
+   does not establish label availability.
+3. Allow tables explicitly declaring `time_col: null`: drivers, constructors
+   and circuits. Count these separately from unknown timestamps.
+4. Reject missing query times, missing times in temporal tables, or unclassified
+   node IDs. RT's missing-time sentinel is not enough to declare a table timeless.
 
-The resulting assignment is a permutation, decomposed into disjoint cycles:
+The filter changes the padding mask for unavailable cells; it does not refill
+or reorder the retained context. The 2026-10-05 run masked 55 future race cells
+and 1,379 unclosed support-label cells in each context configuration. Both arms
+then use the same filtered cells, values, labels and timestamps.
 
-- **0%:** apply no cycles; parent identities remain original.
-- **100%:** apply the full assignment, preserving the original full-rewiring
-  behavior and RNG stream for fixed input/seed.
-- **50%:** visit cycles in seeded shuffled-index order. Select a whole cycle
-  only if its changed-ID count strictly improves the distance to
-  `round(0.5 × full-matching changed IDs)` for that group. Ties stay unchanged;
-  cycles changing no IDs are ignored. Python rounding uses ties-to-even.
+Past qualifying rows can point to a later race. No schedule-availability
+timestamp is supplied, so we exclude the future race cells rather than inventing
+a same-day exception. Mature support labels can come from earlier train,
+validation or test query windows; this is a **rolling-label context**, not a
+train-only support protocol.
 
-Selecting complete cycles preserves the parent-instance multiset. It does
-not by itself guarantee all token-level invariants, which are checked
-separately. Discrete cycle sizes can make the achieved intermediate strength
-approximate or zero in small groups.
+This validates retained inputs under benchmark conventions. It does not prove
+that static attributes were historically immutable, and the original sampler
+can use information later masked from the input when selecting context rows.
+We therefore do not claim a wholly leakage-free retrieval/forecasting system.
 
-Requested strength is relative to the **current seeded maximum matching**,
-not all eligible edges. Both achieved ratios are reported:
+## Structural intervention
 
-```text
-changed / eligible
-changed / full-matching maximum changed
-```
+`f2p_nbr_idxs` stores parent row IDs reached through FK slots. The parallel
+`f2p_rel_idxs` identifies the FK column/relation and is used for matching, not
+as an extra learned model input.
 
-Zero denominators are undefined, represented as NaN in NPZ and null in JSON.
-Singleton and infeasible groups remain eligible but unchanged, with separate
-accounting. The inherited 80%-of-non-singleton coverage check applies only to
-100% arms. Inference also rejects non-clean arms with no realized changes.
+An **eligible FK edge instance** is a (sampled context, relation, source row,
+FK slot) with an in-context parent. Repeated cells of a source row count once
+for that slot. A **changed edge instance** receives a different parent ID.
 
-## Validation before inference
+Within each (sampled context, relation) stratum, minimum-cost matching permutes
+the original parent instances, including duplicates. A parent equal to the
+source row is forbidden; keeping the same parent ID is penalized. Singleton
+and infeasible strata remain eligible but unchanged.
 
-Validation traverses every evaluator batch without loading weights. It uses
-`batch_mask` to exclude phantom rows, then requires exactly the 702 distinct
-metadata-defined target IDs. Failed/timed-out intended sampler items can also
-be masked as phantoms; the exact-ID check detects their loss.
+For fixed inputs and seed, the full assignment is deterministic. Intermediate
+strength selects whole cycles of that same assignment, preserving the parent
+multiset. Cycles are visited in shuffled-index order and accepted only when they
+strictly improve distance to `round(alpha × maximum changed IDs)`; ties stay
+unchanged. Rounding uses Python's ties-to-even rule.
 
-At the default token budget, batch sizes are 5,461 for context 48 and 2,048 for
-context 128, so both configurations fit the 702 intended queries in one batch.
-The runner avoids RT's redundant floor batch cap after sampler construction;
-it does not change the sampled item limit or batch size.
+- **0%:** no cycles applied.
+- **100%:** the seeded full assignment.
+- **50%:** approximately half the maximum changed IDs, subject to discrete cycles.
 
-Every arm checks:
+Report both `changed / eligible` and `changed / maximum changed`. Undefined
+denominators are NaN in NPZ and null in JSON. Requested strength is not the
+fraction of all eligible links, and discrete selection need not realize 50%.
 
-- held-fixed sampled inputs, source-slot copy consistency and unchanged
-  absent/ineligible slots;
-- no self-links, original parent multisets and distinct-parent counts;
-- feature/neighbor attention **key counts per token**;
-- target-ID/label alignment and evaluator-equivalent labeled support;
-- relation → query → aggregate exposure reconciliation.
+## What is controlled
 
-Key-count preservation does **not** mean identical attention adjacency:
-which rows attend to one another is intentionally changed. Source-edge
-permutations can fail token-level checks when repeated-row cell multiplicities
-or duplicate parents interact. Such failures are rejected rather than waived.
+| Fixed between paired arms | Intervention | Measured consequences |
+|---|---|---|
+| Query, retained cells/order, values, labels, timestamps, source IDs, relation IDs, FK slots, parent-instance multiset, model weights | FK parent identity within strata | Attention incidence, per-token key counts/fanout, normalization, scores |
 
-Temporal checks compare each in-context parent against the query timestamp,
-once per source-node/FK-slot, in both clean and rewired contexts. Rustler's
-`i32::MIN` means missing timestamp. Reports distinguish checked, valid,
-known-future and unknown comparisons, including missing target, parent or both.
-Missing-target and missing-parent counts overlap; subtract missing-both to
-obtain unknown. Inconsistent timestamps across copies of a node are errors.
+Hard checks verify held-fixed inputs, source-slot copy consistency, unchanged
+absent/ineligible slots, no self-links, and parent multisets **once per source
+row/slot**, not once per cell. Query/relation/run-level exposure counts must
+reconcile; labels, target IDs and prediction/exposure rows must align.
 
-Missing timestamps are not inferred from context membership. The current
-runner stops on unresolved temporal uncertainty; interpretation or a defensible
-methodological restriction must be established before repeating validation.
-These checks concern sampled in-context links, not database-wide FK validity.
+Fanout and distinct-parent-count changes are diagnostics, not rejection gates
+for this incidence experiment. Strict fanout checking remains available in the
+low-level validator. This experiment measures the **total effect of incidence
+corruption**, not parent content independently of degree or attention scaling.
+It also does not construct a globally valid counterfactual database.
 
-Both contexts and all planned arms are validated before any forward call.
-During inference, a SHA-256 fingerprint binds each real batch to the sampled
-input validated earlier. Input equality and post-prediction mutation checks
-protect pairing throughout the run.
+## Validation and measurement
 
-## Execution and artifacts
+All arms and contexts are validated before weights load. Only real sampler
+rows count, but the exact 702-target coverage gate detects lost intended rows.
+The run binds inference to validated sampled inputs with fingerprints and checks
+for post-prediction mutation. Model microbatching occurs after matching and does
+not alter contexts or the matching RNG.
 
-The experiment is fixed to `rel-f1/driver-dnf` and the RT-PluRel classification
-checkpoint, with 48/24 and 128/64 contexts. Explicit CLI flags configure
-contexts, seeds, fractions and local paths; `configs/*.yaml` are reference
-records, not executable configuration.
+Per-query exposure stores token/support/unique-parent counts; eligible, changed,
+maximum, singleton and unrewirable edge counts; requested/realized strengths;
+availability removals; fanout diagnostics; and temporal status. Flattened
+relation records identify their query row and relation ID. Relation metadata is
+saved in the manifest.
 
-```bash
-# Maximum-only validation; repeat with --ctx 128 --local-ctx 64.
-uv run python experiments/run_clean_rewire.py --ctx 48 --local-ctx 24 \
-  --fractions 1 --dry-run --pre-dir artifacts/clean_rewire_preprocessed
+Analysis checks artifact hashes, target/label alignment, checkpoint identity
+across contexts, and saved exposure/temporal/availability accounting. It reports
+AUROC, arm-minus-clean differences, seed means/ranges, absolute paired raw-score
+shifts and Pearson correlations. Zero-variance correlations are undefined.
+Global ratios use summed counts; query means omit undefined denominators.
 
-# Complete two-context matrix validation.
-uv run python experiments/run_clean_rewire.py --dry-run \
-  --pre-dir artifacts/clean_rewire_preprocessed
+## Interpretation limits
 
-# Validation followed by conditional inference, using existing local weights.
-uv run python experiments/run_clean_rewire.py \
-  --pre-dir artifacts/clean_rewire_preprocessed \
-  --checkpoint-dir /path/to/local/rt-plurel/classification
-```
+This is one model/task with three rewiring seeds. Seed ranges are variability
+across interventions, not confidence intervals. Corruption response can be
+non-monotonic. Context/local-context settings jointly change sampling and
+exposure; their comparison does not identify a causal context-size effect.
+The common availability policy changes historical inputs, so the old pilot is
+not a directly equivalent baseline. Further exposure-controlled analysis and
+uncertainty estimation are needed before stronger conclusions.
 
-The full matrix contains seven arms per context: `base`, `a050_s101/202/303`
-and `a100_s101/202/303`. Clean inference runs once. The local checkpoint folder
-must actually contain the intended RT-PluRel weights; recorded hashes identify
-the files used but do not establish their original model-family provenance.
-
-Current conservative deployment checks require CUDA compute capability >=8,
-free VRAM >=8 GiB or 3× checkpoint bytes, and available host RAM >=2 GiB or 2×
-checkpoint bytes, whichever is larger. These are operational checks, not
-measured minimum model requirements. Actual runtime/OOM failures still leave
-incomplete reports. The runner downloads neither data nor weights.
-
-Each invocation creates a fresh directory under ignored `results/runs/`:
-
-| Artifact | Contents |
-|---|---|
-| `matrix.json` | Overall validation/execution status and provenance |
-| `<context>/validation.json` | Coverage, structural/temporal checks, counts and replay fingerprints |
-| `<context>/validation_exposure_<arm>.npz` | Pre-inference per-query/relation exposure |
-| `<context>/preds_<arm>.npz` | Aligned `labels`, raw `preds`, `node_idxs`, each length 702 |
-| `<context>/exposure_<arm>.npz` | Query/relation eligible, changed, maximum, singleton/unrewirable counts; token/support/parent and timestamp summaries |
-| `<context>/manifest.json` | Arm AUROCs, counters, relation metadata, effective settings, checkpoint/file hashes and completion status |
-
-Source revision plus worktree hash, software versions and preprocessing/
-embedding identities are recorded. Checkpoint path/hash and a local snapshot
-revision when identifiable are recorded independently of historical weights.
-Validation and inference artifacts are distinct and existing files are not
-silently replaced. Failed/interrupted matrices are explicitly incomplete.
-Do not interpret partial outputs as the completed preliminary comparison.
-
-Exit 0 means completed technical checks/execution; exit 1 means failure;
-exit 2 means `temporal_uncertainty`. Validation-only runs save neither model
-predictions nor large sampled contexts. Software tests use marked synthetic
-fixtures and do not establish validity on actual RelBench batches.
-
-## Analysis and interpretation
-
-Analysis loads saved arrays without RT, checks checksums and target/label
-alignment across arms/contexts, and reconciles exposure with recorded totals.
-It produces six context-by-strength summaries and all 14 arm rows with:
-
-- AUROC per arm, mean/range over rewiring seeds and signed delta
-  **arm minus clean**;
-- mean/median absolute paired **raw-score** change and clean-versus-arm Pearson
-  correlation, undefined when either vector has zero variance;
-- query-mean and global achieved changed/eligible and changed/maximum ratios.
-
-Global ratios use summed edge counts, not averages of query percentages.
-Query means omit zero-denominator rows and report their counts. Summary medians
-pool absolute shifts across query/seed pairs. Synthetic test artifacts are
-rejected by the analysis CLI.
-
-These are preliminary descriptive comparisons: no significance tests or causal
-context-size conclusion. Context construction and structural exposure differ
-between 48 and 128. Historical four-arm results remain separate, and their
-unproven checkpoint revision prevents claiming identical historical weights.
+See [reproduction](REPRODUCIBILITY.md) for execution details and
+[current results](../results/preliminary/2026-10-05_validated/README.md) for the
+completed evidence set.

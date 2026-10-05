@@ -12,7 +12,9 @@ import numpy as np
 from .rewiring import (
     TEMPORAL_FIELDS,
     assert_structural_invariants,
+    attention_fanout_counts,
     attn_true_counts,
+    effective_parent_set_sizes,
     rewire_f2p_nbr,
     summarize_query_exposure,
     summarize_temporal_status,
@@ -30,6 +32,77 @@ QUERY_FIELDS = (
     "requested_strength",
     "configured_context_sizes",
 )
+AVAILABILITY_FIELDS = (
+    "original_token_counts", "removed_future_tokens", "removed_unmatured_label_tokens",
+    "declared_timeless_tokens",
+)
+FANOUT_FIELDS = (
+    "feat_changed_tokens", "nbr_changed_tokens", "feat_absolute_delta",
+    "nbr_absolute_delta", "parent_set_changed_tokens",
+)
+
+
+def timeless_parent_ranges(policy):
+    """Return only node ranges explicitly declared timeless by the schema."""
+    return [(info["start"], info["stop"]) for info in policy["tables"]
+            if info["time_col"] is None] if policy else []
+
+
+def available_context(batch, policy):
+    """Mask unavailable cells once, before clean/rewired arms; do not refill.
+
+    This is common input preparation, not the structural intervention. Every
+    retained temporal row must have a known time <= the query. Forecast labels
+    need a fully closed outcome window. Explicitly timeless tables are allowed
+    under the benchmark convention; genuinely missing required times fail.
+    """
+    result = dict(batch)
+    padding = batch["is_padding"].copy()
+    nodes = batch["node_idxs"]
+    times = batch["timestamps"].astype(np.int64)
+    present = ~padding
+    targets = batch["is_targets"] & present
+    if not np.all(targets.sum(axis=1) == 1):
+        raise ValueError("availability requires one target per real prediction query")
+    target_positions = targets.argmax(axis=1)
+    cutoffs = times[np.arange(len(nodes)), target_positions][:, None]
+    missing = np.iinfo(np.int32).min
+    if np.any(cutoffs == missing):
+        raise ValueError("prediction query timestamp is missing")
+    classified = np.zeros_like(padding)
+    future = np.zeros_like(padding)
+    immature = np.zeros_like(padding)
+    timeless = np.zeros_like(padding)
+    for info in policy["tables"]:
+        positions = present & (nodes >= info["start"]) & (nodes < info["stop"])
+        classified |= positions
+        if info["time_col"] is None:
+            timeless |= positions
+            continue
+        if np.any(positions & (times == missing)):
+            raise ValueError(f"missing timestamp in temporal table {info['table']}")
+        future |= positions & (times > cutoffs)
+        if info["label_column"] is not None:
+            label_cells = positions & (batch["col_name_idxs"] == info["label_column"]) & ~targets
+            immature |= label_cells & (times + info["horizon_seconds"] > cutoffs)
+    if np.any(present & ~classified):
+        raise ValueError("sampled node has no source-schema availability metadata")
+    if np.any(targets & (future | immature)):
+        raise ValueError("availability must not remove the evaluated target")
+    padding |= future | immature
+    result["is_padding"] = padding
+    return result, {
+        "original_token_counts": present.sum(axis=1, dtype=np.int64),
+        "removed_future_tokens": future.sum(axis=1, dtype=np.int64),
+        "removed_unmatured_label_tokens": (immature & ~future).sum(axis=1, dtype=np.int64),
+        "declared_timeless_tokens": (timeless & ~padding).sum(axis=1, dtype=np.int64),
+    }
+
+
+def attach_availability(exposure, counts):
+    """Persist common filtering counts alongside every arm's query exposure."""
+    if counts is not None:
+        exposure.update({f"availability_{key}": value.copy() for key, value in counts.items()})
 
 
 def experiment_arms(seeds, fractions=(0.0, 0.5, 1.0)):
@@ -126,7 +199,7 @@ def reconcile_temporal(status, eligible_edges=None):
         if any(counts[key] < 0 for key in TEMPORAL_FIELDS):
             raise ValueError("negative temporal accounting count")
         if (
-            counts["comparisons"] != counts["checked"] + counts["unknown"]
+            counts["comparisons"] != counts["checked"] + counts["unknown"] + counts["declared_timeless"]
             or counts["checked"] != counts["valid"] + counts["known_violations"]
             or counts["unknown"] != counts["missing_target"] + counts["missing_parent"] - counts["missing_both"]
             or counts["missing_both"] > min(counts["missing_target"], counts["missing_parent"])
@@ -192,6 +265,10 @@ def write_exposure_npz(path, batches):
     )
     fields = QUERY_FIELDS + tuple(
         key for key in temporal_fields if batches and key in batches[0]
+    )
+    fields += tuple(
+        f"{prefix}{key}" for prefix, keys in (("availability_", AVAILABILITY_FIELDS), ("fanout_", FANOUT_FIELDS))
+        for key in keys if batches and f"{prefix}{key}" in batches[0]
     )
     query = {key: [] for key in fields}
     relation = {"relation_query_indices": [], "relation_ids": []}
@@ -270,7 +347,7 @@ def capture_evaluator_masks(ev, holder):
         ev.eval_loader_iters[task] = iter(captured)
 
 
-def rewire_and_validate_batch(base, seed, alpha=1.0):
+def rewire_and_validate_batch(base, seed, alpha=1.0, availability_policy=None):
     """Apply maximum rewiring and inspect a real-row batch at one shared seam.
 
     Return structural/temporal errors alongside exposure rather than losing
@@ -294,11 +371,13 @@ def rewire_and_validate_batch(base, seed, alpha=1.0):
         temporal[name] = summarize_temporal_status(
             batch["f2p_nbr_idxs"], batch["node_idxs"], batch["timestamps"],
             batch["is_padding"], batch["is_targets"],
+            timeless_ranges=timeless_parent_ranges(availability_policy),
         )
         reconcile_temporal(temporal[name], totals["eligible_edges"])
     structural_errors = assert_structural_invariants(
         cap["f2p_nbr_idxs"], arm["f2p_nbr_idxs"], arm["f2p_rel_idxs"],
         arm["node_idxs"], arm["is_padding"],
+        enforce_fanout=availability_policy is None,
     )
     errors = structural_errors.copy()
     for name, counts in temporal.items():
@@ -308,6 +387,15 @@ def rewire_and_validate_batch(base, seed, alpha=1.0):
         arm["is_targets"], arm["col_name_idxs"], arm["is_task_nodes"], sequence_stats,
     )
     exposure["configured_context_sizes"] = np.full(len(cap["node_idxs"]), cap["node_idxs"].shape[1], dtype=np.int64)
+    before = attention_fanout_counts(cap["node_idxs"], cap["f2p_nbr_idxs"], cap["is_padding"])
+    after = attention_fanout_counts(arm["node_idxs"], arm["f2p_nbr_idxs"], arm["is_padding"])
+    for key in ("feat", "nbr"):
+        exposure[f"fanout_{key}_changed_tokens"] = (before[key] != after[key]).sum(axis=1, dtype=np.int64)
+        exposure[f"fanout_{key}_absolute_delta"] = np.abs(after[key] - before[key]).sum(axis=1, dtype=np.int64)
+    exposure["fanout_parent_set_changed_tokens"] = (
+        effective_parent_set_sizes(cap["f2p_nbr_idxs"], cap["node_idxs"], cap["is_padding"])
+        != effective_parent_set_sizes(arm["f2p_nbr_idxs"], arm["node_idxs"], arm["is_padding"])
+    ).sum(axis=1, dtype=np.int64)
     ids, _, support = evaluator_query_arrays(cap)
     if not np.array_equal(exposure["target_node_idxs"], ids):
         raise ValueError("exposure target IDs differ from evaluator target IDs")
@@ -327,7 +415,7 @@ def rewire_and_validate_batch(base, seed, alpha=1.0):
     }
 
 
-def validate_batches(batches, expected_target_ids, seeds, ctx, fractions=None):
+def validate_batches(batches, expected_target_ids, seeds, ctx, fractions=None, availability_policy=None):
     """Traverse real batches and return per-arm validation evidence and exposure.
 
     Failures return an explicitly incomplete report, including already observed
@@ -342,7 +430,8 @@ def validate_batches(batches, expected_target_ids, seeds, ctx, fractions=None):
         "phantom_rows": 0, "target_node_idxs": [], "labels": [], "errors": [],
         "context_token_counts": [], "base_temporal_batches": 0,
         "batch_fingerprints": [], "fractions": list(fractions) if fractions is not None else [1.0],
-        "fanout_check": "per-token feature/neighbor key counts, not adjacency equality",
+        "fanout_check": ("record per-token fanout as an incidence effect, not a rejection gate"
+                         if availability_policy else "strict per-token key-count preservation"),
         "base_temporal": {key: 0 for key in TEMPORAL_FIELDS},
         "per_arm": {
             str(name): {"totals": {key: 0 for key in EDGE_FIELDS},
@@ -353,6 +442,8 @@ def validate_batches(batches, expected_target_ids, seeds, ctx, fractions=None):
                         "structural_error_count": 0, "structural_errors": []}
             for name, alpha, seed in arms
         },
+        "availability_policy": availability_policy,
+        "availability_totals": {key: 0 for key in AVAILABILITY_FIELDS},
     }
     exposures = {name: [] for name, _, _ in arms}
     try:
@@ -365,6 +456,11 @@ def validate_batches(batches, expected_target_ids, seeds, ctx, fractions=None):
         for raw in batches:
             report["batches_processed"] += 1
             base, phantom_count = real_query_batch(raw)
+            availability_counts = None
+            if availability_policy and len(base["node_idxs"]):
+                base, availability_counts = available_context(base, availability_policy)
+                for key in AVAILABILITY_FIELDS:
+                    report["availability_totals"][key] += int(availability_counts[key].sum())
             report["batch_fingerprints"].append(batch_fingerprint(base))
             report["phantom_rows"] += phantom_count
             if base["node_idxs"].shape[1] != ctx:
@@ -387,6 +483,7 @@ def validate_batches(batches, expected_target_ids, seeds, ctx, fractions=None):
             base_time = summarize_temporal_status(
                 base["f2p_nbr_idxs"], base["node_idxs"], base["timestamps"],
                 base["is_padding"], base["is_targets"],
+                timeless_ranges=timeless_parent_ranges(availability_policy),
             )
             reconcile_temporal(base_time)
             for key in TEMPORAL_FIELDS:
@@ -396,7 +493,8 @@ def validate_batches(batches, expected_target_ids, seeds, ctx, fractions=None):
                 report["base_temporal_error_count"] = len(base_time["errors"])
                 raise ValueError(f"base temporal (first 20 errors): {base_time['errors'][:20]}")
             for name, alpha, seed in arms:
-                evidence = rewire_and_validate_batch(base, seed, alpha)
+                evidence = rewire_and_validate_batch(base, seed, alpha, availability_policy)
+                attach_availability(evidence["exposure"], availability_counts)
                 summary = report["per_arm"][str(name)]
                 for key in TEMPORAL_FIELDS:
                     summary["temporal"][key] += evidence["temporal"][key]
@@ -405,10 +503,13 @@ def validate_batches(batches, expected_target_ids, seeds, ctx, fractions=None):
                 summary["accounted_batches"] += 1
                 summary["structural_error_count"] += len(evidence["structural_errors"])
                 summary["structural_errors"].extend(evidence["structural_errors"][:20])
-                for label, error in (("feature", "feat attention fanout changed per token"),
-                                     ("neighbor", "nbr attention fanout changed per token")):
+                for label, code in (("feature", "feat"), ("neighbor", "nbr")):
                     key = f"{label}_fanout_preserved"
-                    summary[key] = summary[key] is not False and error not in evidence["structural_errors"]
+                    changed = int(evidence["exposure"][f"fanout_{code}_changed_tokens"].sum())
+                    summary[key] = summary[key] is not False and changed == 0
+                summary.setdefault("fanout_totals", {key: 0 for key in FANOUT_FIELDS})
+                for key in FANOUT_FIELDS:
+                    summary["fanout_totals"][key] += int(evidence["exposure"][f"fanout_{key}"].sum())
                 exposures[name].append(evidence["exposure"])
                 if evidence["errors"]:
                     raise ValueError(f"arm {name} (first 20 errors): {evidence['errors'][:20]}")

@@ -1,8 +1,12 @@
+# Reference settings; execution uses experiments/run_clean_rewire.py CLI.
 dataset: rel-f1
 task: driver-dnf
 context_size: 48
 local_context_size: 24
 seeds: [101, 202, 303]
+fractions: [0.0, 0.5, 1.0]
+inference_batch_size: 8
+availability_policy: query_available_incidence_v1
 items_per_task: 702
 shuffle_seed: 0
 embedding_model: all-MiniLM-L12-v2
