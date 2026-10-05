@@ -1,6 +1,6 @@
 # Methodology
 
-## Unit of comparison
+## What the model sees
 
 A prediction query is a `driver-dnf` task row: driver identity, query time and
 a binary label for failure to finish in the next 30 days. RT receives a sampled
@@ -11,11 +11,12 @@ For each context setting, one frozen RT-PluRel model evaluates a clean condition
 and six corruption conditions (50%/100% requested strengths × seeds 101/202/303).
 All arms use exactly the same 702 target IDs and labels in paired order.
 
-## Common availability preparation
+## Which information is available to a query?
 
-Policy **`query_available_incidence_v1`** is applied after sampling, before
-matching or any model forward. It uses the raw dataset/task manifests plus the
-preprocessed node ranges and column IDs:
+Before comparing clean and rewired links, we apply the same availability rules
+to their shared context. The policy is named **`query_available_incidence_v1`**
+in the saved files. It uses the raw dataset/task manifests to determine which
+tables have timestamps and when support labels become available:
 
 1. Keep temporal row cells only when `row time <= query time`.
 2. Keep non-target forecast-label cells only when
@@ -43,7 +44,7 @@ that static attributes were historically immutable, and the original sampler
 can use information later masked from the input when selecting context rows.
 We therefore do not claim a wholly leakage-free retrieval/forecasting system.
 
-## Structural intervention
+## How FK links are changed
 
 `f2p_nbr_idxs` stores parent row IDs reached through FK slots. The parallel
 `f2p_rel_idxs` identifies the FK column/relation and is used for matching, not
@@ -53,16 +54,22 @@ An **eligible FK edge instance** is a (sampled context, relation, source row,
 FK slot) with an in-context parent. Repeated cells of a source row count once
 for that slot. A **changed edge instance** receives a different parent ID.
 
-Within each (sampled context, relation) stratum, minimum-cost matching permutes
-the original parent instances, including duplicates. A parent equal to the
-source row is forbidden; keeping the same parent ID is penalized. Singleton
-and infeasible strata remain eligible but unchanged.
+For each sampled context, we group eligible links by FK relation. This group is
+called a **relation stratum**. A minimum-cost matching reassigns the original
+parent instances, including duplicates, within that group. The algorithm forbids
+a row from becoming its own parent and prefers changing the parent ID. A group
+with just one link cannot be permuted; it stays eligible but unchanged. The same
+is true if no allowed matching exists.
 
-For fixed inputs and seed, the full assignment is deterministic. Intermediate
-strength selects whole cycles of that same assignment, preserving the parent
-multiset. Cycles are visited in shuffled-index order and accepted only when they
-strictly improve distance to `round(alpha × maximum changed IDs)`; ties stay
-unchanged. Rounding uses Python's ties-to-even rule.
+For fixed inputs and seed, the full assignment is deterministic. To create a
+partial change, we apply complete cycles of that assignment rather than selecting
+individual links. For example, applying a two-row swap changes both links or
+neither. This preserves the original parent counts, also called the parent
+multiset.
+
+Cycles are visited in seeded shuffled order and accepted only when they bring
+the number of changed IDs closer to `round(alpha × maximum changed IDs)`.
+Ties stay unchanged; rounding uses Python's ties-to-even rule.
 
 - **0%:** no cycles applied.
 - **100%:** the seeded full assignment.
@@ -89,7 +96,7 @@ low-level validator. This experiment measures the **total effect of incidence
 corruption**, not parent content independently of degree or attention scaling.
 It also does not construct a globally valid counterfactual database.
 
-## Validation and measurement
+## What is checked and saved
 
 All arms and contexts are validated before weights load. Only real sampler
 rows count, but the exact 702-target coverage gate detects lost intended rows.
@@ -109,15 +116,14 @@ AUROC, arm-minus-clean differences, seed means/ranges, absolute paired raw-score
 shifts and Pearson correlations. Zero-variance correlations are undefined.
 Global ratios use summed counts; query means omit undefined denominators.
 
-## Interpretation limits
+## Reading the comparisons
 
 This is one model/task with three rewiring seeds. Seed ranges are variability
 across interventions, not confidence intervals. Corruption response can be
 non-monotonic. Context/local-context settings jointly change sampling and
 exposure; their comparison does not identify a causal context-size effect.
 The common availability policy changes historical inputs, so the old pilot is
-not a directly equivalent baseline. Further exposure-controlled analysis and
-uncertainty estimation are needed before stronger conclusions.
+not a directly equivalent baseline.
 
 See [reproduction](REPRODUCIBILITY.md) for execution details and
 [current results](../results/preliminary/2026-10-05_validated/README.md) for the

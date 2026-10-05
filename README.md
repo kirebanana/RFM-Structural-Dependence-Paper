@@ -1,141 +1,140 @@
 # Measuring Structural Reliance in Relational Foundation Models
 
-A two-student university research project at FINKI studying whether a pretrained
-Relational Transformer uses the **correct connections between database rows**,
-rather than just the information those rows contain.
+This project explores how much a pretrained model relies on the
+**correct connections between database rows**.
+If the model sees the same information but different relationships, do its
+predictions change?
 
-We use frozen **RT-PluRel** on **RelBench `rel-f1 / driver-dnf`**. Each prediction
-query asks whether a driver will fail to finish a race in the next 30 days.
-The model receives a sampled context of database cells and available labeled
-support rows, not the entire database.
+We use **RT-PluRel**, a pretrained Relational Transformer, on **RelBench**, a
+benchmark of prediction tasks over relational databases. Our current task is
+`rel-f1 / driver-dnf`: predict whether a driver will fail to finish a race in
+the next 30 days. The model is frozen—we run inference, not training.
 
-## The experiment
+## How the experiment works
 
-```text
-same driver query, available cells, values, labels, timestamps, and model
-             correct FK parents  vs  reassigned FK parents
+A **prediction query** is one driver at a particular date. Its **sampled
+context** is the collection of database cells and available labeled support
+rows selected for that prediction. RT processes cells as tokens; one database
+row can contribute several tokens.
 
-example:   row A → parent X        row A → parent Y
-           row B → parent Y        row B → parent X
-```
-
-We permute parent instances within each sampled context and FK relation. This
-retains source slots and the parent multiset; it does not rewrite the database
-or retrieve a new context. Partial corruption selects whole permutation cycles.
-
-| Held fixed across conditions | Changed | Allowed consequences |
-|---|---|---|
-| Query, retained cell order/content, labels, timestamps, source IDs, FK types/slots, model weights | Concrete FK parent identities | Attention connections, token-level fanout and normalization, predictions |
-
-**RQ1:** How sensitive are predictions to FK-incidence corruption with sampled
-information held fixed? **RQ2:** How does this sensitivity vary with context and
-structural exposure? The current milestone provides descriptive context/strength
-comparisons and exposure records; a controlled RQ2 analysis remains future work.
-
-## Current preliminary results — 5 October 2026
-
-All 14 conditions use the same 702 targets and three rewiring seeds
-(101, 202, 303). Context/local-context settings are 48/24 and 128/64: the first
-number is the token budget; the second controls local graph expansion. Actual
-retained token counts may be smaller after availability filtering.
-
-| Context/local | Requested strength | AUROC mean [seed range] | Δ clean | Changed / eligible FK edges |
-|---|---:|---:|---:|---:|
-| 48/24 | Clean | 0.5613 | — | 0% |
-| 48/24 | 50% | 0.5610 [0.5516–0.5682] | −0.0003 | 25.74% |
-| 48/24 | 100% | 0.5604 [0.5533–0.5661] | −0.0010 | 61.22% |
-| 128/64 | Clean | 0.6427 | — | 0% |
-| 128/64 | 50% | 0.5893 [0.5862–0.5912] | −0.0534 | 28.03% |
-| 128/64 | 100% | 0.6143 [0.6071–0.6246] | −0.0285 | 74.76% |
-
-Requested strength is relative to the seed's maximum matching, **not all FK
-edges**. Whole cycles make the intermediate strength approximate. Δ is arm minus
-clean; seed ranges describe rewiring variability, not confidence intervals.
-Context-48 effects vary in sign; context-128 corruption lowers AUROC in every
-seed, but **50% hurts more than 100%**. A monotonic response is not established.
-
-[Curated results](results/preliminary/2026-10-05_validated/README.md) include all
-predictions, exposure arrays, provenance, validation and paired score statistics.
-The older pilot remains in `results/preliminary/ctx*/`; its unfiltered contexts
-and unpinned checkpoint revision make it a separate historical experiment.
-
-## Validation and availability
-
-Before creating conditions, we apply one shared query-time filter: temporal
-rows must be dated at or before the query; forecast support labels must have
-closed their outcome window. Removed cells are not refilled. The completed run
-masked 55 future race cells and 1,379 unclosed support-label cells per context.
-Schema-declared timeless tables follow RelBench's static-covariate convention;
-genuinely missing required timestamps stop execution.
-
-Every arm passed source-slot, parent-multiset, self-link, input-equality,
-target-pairing and exposure-accounting checks. Retained parent comparisons had
-no known violations or unresolved times. These are validations under an explicit
-policy, **not a claim of globally valid database rewiring or complete historical
-feature availability**. See [methodology](docs/METHODOLOGY.md).
-
-## Setup and reproduction
-
-Requires Linux/WSL, `uv`, Rust and internet access for initial dependency/data
-downloads. Run from the repository root:
-
-```bash
-bash scripts/setup.sh
-uv run pytest -q
-uv run ruff check .
-```
-
-The [reproduction guide](docs/REPRODUCIBILITY.md) gives pinned dataset/checkpoint
-downloads, preprocessing and required files. After preparing them:
-
-```bash
-# Check every context and condition without loading model weights.
-uv run python experiments/run_clean_rewire.py --dry-run \
-  --pre-dir artifacts/clean_rewire_preprocessed
-
-# Revalidate, then run inference only if all gates pass.
-uv run python experiments/run_clean_rewire.py \
-  --pre-dir artifacts/clean_rewire_preprocessed \
-  --checkpoint-dir artifacts/rt-plurel/classification \
-  --device auto --inference-batch-size 8
-
-# Replace RUN_ID with the fresh directory printed by the runner.
-uv run python experiments/analyze_preliminary.py results/runs/preliminary_RUN_ID \
-  --output results/runs/preliminary_RUN_ID/analysis
-```
-
-The matrix ran on a **GTX 1650, 4 GB**, with eager BF16 emulation: approximately
-160 and 206 seconds of inference per context. Runtime varies by environment.
-Saved-array analysis of the curated results requires no RT or external data:
-
-```bash
-uv run python experiments/analyze_preliminary.py \
-  results/preliminary/2026-10-05_validated --output results/runs/curated_analysis
-```
-
-## Repository
+For each query, we compare the original foreign-key (FK) links with rewired
+links in the same sampled context:
 
 ```text
-src/rfm_structure/  matching, validation, availability, provenance, analysis
-experiments/        inference and saved-array analysis entry points
-tests/              lightweight synthetic and curated-artifact checks
-scripts/            environment setup and RT preprocessing
-configs/            reference parameter records (runner uses CLI)
-vendor/             pinned Stanford RT with relation-metadata patches
-patches/            upstream revision
-results/preliminary/ versioned current results and separate historical pilot
+                 original links      rewired links
+                 row A → parent X     row A → parent Y
+                 row B → parent Y     row B → parent X
+
+same query, sampled information, values, labels, timestamps, and model
 ```
 
-## Limits and next steps
+Only parent row IDs are reassigned. We keep each FK relation separate and reuse
+the same parent instances, rather than replacing them with arbitrary rows.
+There is one clean condition and six rewired conditions: requested strengths
+50% and 100%, each with three seeds. The requested strength is relative to the
+maximum matching, so the actual proportion of changed links is recorded too.
 
-Evidence covers one task/model and three seeds, with no significance testing.
-Context construction and exposure both differ between settings, so RQ2 remains
-descriptive. The measured effect includes fanout changes. Support uses mature
-rolling labels, not a train-only protocol; sampling occurs before the common
-availability mask, so retrieval selection is not proven historically leakage-free.
-Fresh native preprocessing has not been verified to reproduce every artifact
-byte-for-byte. Next steps are controlled exposure analysis and uncertainty
-estimation, then broader replication.
+Before this comparison, a shared availability filter removes future-dated cells
+and support labels whose outcome window has not closed. Both conditions receive
+the same filtered input. Validation checks the held-fixed inputs, permitted
+rewiring, prediction alignment, and accounting. Attention connections and the
+number of connected tokens can change as a consequence of rewiring.
+
+The questions are:
+- **RQ1:** How sensitive are RT-PluRel predictions to changed FK identities when
+  sampled information is kept fixed?
+- **RQ2:** How does that sensitivity vary with context size and the amount of
+  relational structure exposed to the model?
+
+See [methodology](docs/METHODOLOGY.md) for the matching algorithm, availability
+rules, and definitions of the measurements.
+
+## How the code fits together
+
+The repository has three layers: Stanford's RT implementation, our experiment
+logic, and the executable runners that connect them.
+
+```text
+Raw RelBench tables
+    │ scripts/preprocess.sh
+    ▼
+RT/Rustler data files and FK relation metadata
+    │ Stanford RT sampler
+    ▼
+One sampled context per prediction query
+    │ our common availability filter
+    ├── clean FK links ─────────────────────┐
+    └── seeded FK-parent rewiring ──────────┤
+                                          ▼
+                              same frozen RT-PluRel model
+                                          │
+                              predictions + exposure records
+                                          │ experiments/analyze_preliminary.py
+                                          ▼
+                              paired statistics + result tables
+```
+
+### Experiment entry points
+
+- **`experiments/run_clean_rewire.py`** builds the evaluator, validates every
+  condition, loads the checkpoint once per context setting, and runs clean and
+  rewired inputs through it. `BaseWrap` and `RewireWrap` let the evaluator use
+  one model with different input conditions. Predictions run in small batches
+  after matching; this does not resample the contexts.
+- **`experiments/analyze_preliminary.py`** reads the saved arrays and generates
+  AUROC, paired score changes, correlations, and summary tables without RT.
+
+### Our Python package: `src/rfm_structure/`
+
+| Module | Responsibility |
+|---|---|
+| `rewiring.py` | Match FK parents within each context/relation, select corruption cycles, and check structural properties. |
+| `validation.py` | Filter unavailable cells, validate complete query coverage, collect per-query/per-relation exposure, and write exposure arrays. |
+| `data.py` | Read node ranges, FK relation metadata, and source manifests used to establish availability. |
+| `metrics.py` | Compute binary AUROC from raw prediction scores. |
+| `analysis.py` | Verify saved pairing/accounting and compute descriptive comparisons with the clean condition. |
+| `provenance.py` | Record hashes and identities of code, preprocessing files, software, and checkpoints. |
+
+Two input arrays connect the sampler to our intervention:
+`f2p_nbr_idxs` stores the parent row IDs for each sampled row's FK slots;
+`f2p_rel_idxs` says which FK relation each slot belongs to. Rewiring changes
+the first array, while the second keeps different relationships from being mixed.
+
+### Supporting directories
+
+```text
+scripts/             environment setup and native RT preprocessing
+tests/               algorithm, validation, runner, and saved-result checks
+configs/             readable parameter records; execution uses CLI arguments
+vendor/              pinned Stanford RT model and Rustler sampler/preprocessor
+patches/             upstream revision used for the vendored code
+results/preliminary/ versioned predictions, exposure, and result summaries
+docs/                methodology and reproduction instructions
+```
+
+The small local Stanford patches carry FK relation IDs from Rust preprocessing
+through the sampler into Python. Model architecture remains upstream. Setup
+installs `rfm_structure` and the vendored RT package in the same `uv` environment;
+Rustler is the native extension that reads and samples the prepared database.
+
+## Results
+
+The completed preliminary matrix covers 702 queries at context/local-context
+settings 48/24 and 128/64, with clean, partial, and full rewiring conditions.
+
+**[Read the current results summary](results/preliminary/2026-10-05_validated/SUMMARY.md)**
+
+The [result artifact guide](results/preliminary/2026-10-05_validated/README.md)
+explains the saved predictions, exposure, checksums, and run provenance. Older
+historical pilot outputs are retained separately.
+
+## Setup and running
+
+**[Setup, data preparation, validation, inference, and analysis instructions](docs/REPRODUCIBILITY.md)**
+
+The guide includes pinned data/checkpoint downloads and commands for both new
+experiments and reanalysis of the versioned results. Saved-result analysis does
+not require downloading a model or running inference.
 
 ## Sources
 
@@ -145,8 +144,8 @@ estimation, then broader replication.
   [NeurIPS 2024 paper](https://proceedings.neurips.cc/paper_files/paper/2024/hash/25cd345233c65fac1fec0ce61d0f7836-Abstract-Datasets_and_Benchmarks_Track.html).
 - Gany, Cautis and Maniu, [Structural Adversarial Attacks on Relational Deep
   Learning under Integrity Constraints](https://arxiv.org/abs/2607.07089), 2026:
-  FK rewiring itself is prior art; this study characterizes non-adversarial
-  structural reliance in a pretrained RT.
+  FK rewiring is prior art; our focus is controlled structural reliance in a
+  pretrained Relational Transformer.
 
-Vendored-source provenance and unresolved upstream redistribution licensing
-are recorded in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Vendored-source provenance and licensing are recorded in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

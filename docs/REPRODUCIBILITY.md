@@ -1,4 +1,8 @@
-# Reproducing the preliminary experiment
+# Setup and reproduction
+
+This guide takes you from a fresh checkout to prepared data, validation, and
+inference. If you only want to inspect the committed results, start with the
+saved-array analysis command in the last section; no model or dataset is needed.
 
 Run commands from the repository root on Linux/WSL. Use `uv` and a Rust toolchain
 with native build prerequisites (compiler/linker and Python/native headers as
@@ -22,7 +26,23 @@ The completed run used dataset revision
 `2ed96efc8007c57d589a31ceb435eb768491c439`:
 
 ```bash
-uv run python -c "from huggingface_hub import snapshot_download; snapshot_download('stanford-star/relbench-v1', repo_type='dataset', revision='d8e976fd0a4b78877204bc8dfbcfc9a9f7f48600', allow_patterns='rel-f1/*', local_dir='artifacts/raw'); snapshot_download('stanford-star/rt-plurel', revision='2ed96efc8007c57d589a31ceb435eb768491c439', allow_patterns='classification/*', local_dir='artifacts/rt-plurel')"
+uv run python - <<'PY'
+from huggingface_hub import snapshot_download
+
+snapshot_download(
+    "stanford-star/relbench-v1",
+    repo_type="dataset",
+    revision="d8e976fd0a4b78877204bc8dfbcfc9a9f7f48600",
+    allow_patterns="rel-f1/*",
+    local_dir="artifacts/raw",
+)
+snapshot_download(
+    "stanford-star/rt-plurel",
+    revision="2ed96efc8007c57d589a31ceb435eb768491c439",
+    allow_patterns="classification/*",
+    local_dir="artifacts/rt-plurel",
+)
+PY
 ```
 
 The raw directory `artifacts/raw/rel-f1/` must contain `manifest.yaml`, database
@@ -98,6 +118,17 @@ its full-matrix performance is unmeasured. Microbatching leaves sampling/matchin
 unchanged; reducing its size can address activation-memory pressure.
 
 ## 4. Analyze and inspect artifacts
+
+To reanalyze the versioned result set without loading RT:
+
+```bash
+uv sync --extra dev
+uv run python experiments/analyze_preliminary.py \
+  results/preliminary/2026-10-05_validated --output results/runs/curated_analysis
+```
+
+The output directory must be new; choose another name if it already exists.
+For a newly generated experiment, use its printed run directory instead:
 
 Every invocation prints a fresh `results/runs/preliminary_RUN_ID/` directory.
 Large/local runs are ignored by Git. Each context contains a manifest, compact
