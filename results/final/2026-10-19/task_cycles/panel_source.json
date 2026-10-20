@@ -1,0 +1,30 @@
+{
+  "database": "rel-f1",
+  "task": "driver-dnf",
+  "test_offset": 97606,
+  "manifest": {
+    "name": "driver-dnf",
+    "kind": "forecast",
+    "task_type": "binary_classification",
+    "description": "Predict the if each driver will DNF (not finish) a race in the next 1 month.",
+    "entity_table": "drivers",
+    "entity_col": "driverId",
+    "target_col": "did_not_finish",
+    "time_col": "date",
+    "timedelta": "30 days",
+    "num_eval_timestamps": 40,
+    "sql": "SELECT\n    t.timestamp as date,\n    re.driverId as driverId,\n    MAX(CASE WHEN re.statusId != 1 THEN 1 ELSE 0 END) AS did_not_finish\nFROM\n    timestamps t\nLEFT JOIN\n    results re\nON\n    re.date <= t.timestamp + INTERVAL '{timedelta}'\n    and re.date  > t.timestamp\nWHERE\n    re.driverId IN (\n        SELECT DISTINCT driverId\n        FROM results\n        WHERE date > t.timestamp - INTERVAL '1 year'\n    )\nGROUP BY t.timestamp, re.driverId",
+    "manifest_version": 1
+  },
+  "official_test_size": 702,
+  "raw_test": {
+    "path": "3f982f9218530b82bd165767b45b113171e474eb73dea44b084b42bb27e10032",
+    "bytes": 3190,
+    "sha256": "3f982f9218530b82bd165767b45b113171e474eb73dea44b084b42bb27e10032"
+  },
+  "raw_manifest": {
+    "path": "b8f4bef0ea47c2a88fce303f8cecfe0054d25ee4",
+    "bytes": 787,
+    "sha256": "f2f77d17e8737246d0be482dd4bef13de1395db9ce0bc79ecf3c6d430e6aa64a"
+  }
+}

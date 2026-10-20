@@ -1,0 +1,44 @@
+{
+  "datasets": {
+    "rel-f1": {
+      "repository": "stanford-star/relbench-v1",
+      "revision": "d8e976fd0a4b78877204bc8dfbcfc9a9f7f48600",
+      "tasks": ["driver-dnf", "driver-top3"],
+      "selection": "complete official test splits"
+    },
+    "rel-arxiv": {
+      "repository": "stanford-star/relbench-v2-extra",
+      "revision": "190016ae95ac78362c331e23f072ca74bcbed3a2",
+      "tasks": ["paper-citation"],
+      "selection": "512 official test rows, uniform without replacement, PCG64 seed 20261007",
+      "preprocessing": "all database tables; selected task train/val/test only"
+    },
+    "rel-trial": {
+      "repository": "stanford-star/relbench-v1",
+      "revision": "d8e976fd0a4b78877204bc8dfbcfc9a9f7f48600",
+      "tasks": ["study-outcome"],
+      "selection": "512 official test rows, uniform without replacement, PCG64 seed 20261007",
+      "preprocessing": "all database tables; selected task train/val/test only"
+    }
+  },
+  "checkpoint": {
+    "repository": "stanford-star/rt-plurel",
+    "subdirectory": "classification",
+    "revision": "2ed96efc8007c57d589a31ceb435eb768491c439",
+    "weights_sha256": "4a369f065d8f69e1da11ee4326ceb9d32cf78ee69255a438449e971f681b7f83"
+  },
+  "scoped_encoder": {
+    "repository": "sentence-transformers/all-MiniLM-L12-v2",
+    "revision": "a50ef00143b4d5391434df20ae11632588ac25be",
+    "weights_sha256": "d2d541e5f101695ae495eacd867a8d025ecfe8f9674fb23aa6cf93cdb60a5542",
+    "encoder_dtype": "float32",
+    "stored_dtype": "bfloat16",
+    "dimensions": 384
+  },
+  "pre_inference_replacement": {
+    "attempted": "rel-hm/user-churn",
+    "reason": "native preprocessing exceeded the 10 GiB RSS resource budget",
+    "replacement": "rel-trial/study-outcome",
+    "predictions_produced_for_attempted_task": false
+  }
+}

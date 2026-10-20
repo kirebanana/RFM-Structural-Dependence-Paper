@@ -1,0 +1,30 @@
+{
+  "database": "rel-f1",
+  "task": "driver-top3",
+  "test_offset": 118997,
+  "manifest": {
+    "name": "driver-top3",
+    "kind": "forecast",
+    "task_type": "binary_classification",
+    "description": "Predict if each driver will qualify in the top-3 for a race within the next 1 month.",
+    "entity_table": "drivers",
+    "entity_col": "driverId",
+    "target_col": "qualifying",
+    "time_col": "date",
+    "timedelta": "30 days",
+    "num_eval_timestamps": 40,
+    "sql": "SELECT\n    t.timestamp as date,\n    qu.driverId as driverId,\n    CAST(\n        CASE WHEN MIN(qu.position) <= 3 THEN 1 ELSE 0 END AS BIGINT\n    ) AS qualifying\nFROM\n    timestamps t\nLEFT JOIN\n    qualifying qu\nON\n    qu.date <= t.timestamp + INTERVAL '{timedelta}'\n    and qu.date > t.timestamp\nWHERE\n    qu.driverId IN (\n        SELECT DISTINCT driverId\n        FROM qualifying\n        WHERE date > t.timestamp - INTERVAL '1 year'\n    )\nGROUP BY t.timestamp, qu.driverId",
+    "manifest_version": 1
+  },
+  "official_test_size": 726,
+  "raw_test": {
+    "path": "267ba330f19b15c2f357681d9c35a4f8558830f6a39a657381785dc0ec31a9b8",
+    "bytes": 3238,
+    "sha256": "267ba330f19b15c2f357681d9c35a4f8558830f6a39a657381785dc0ec31a9b8"
+  },
+  "raw_manifest": {
+    "path": "f709f12a7b179eaacc5462280aab46c4513a8e45",
+    "bytes": 827,
+    "sha256": "c3da8e2eca1489b1f8b08410553e3d2619a68ca4e210f1f13c2d5cdec2f980ad"
+  }
+}

@@ -1,0 +1,239 @@
+{
+  "status": "complete",
+  "complete": true,
+  "ctx": 48,
+  "checkpoint": {
+    "name": "stanford-star/rt-plurel/classification",
+    "weights": {
+      "path": "4a369f065d8f69e1da11ee4326ceb9d32cf78ee69255a438449e971f681b7f83",
+      "bytes": 171169918,
+      "sha256": "4a369f065d8f69e1da11ee4326ceb9d32cf78ee69255a438449e971f681b7f83"
+    },
+    "config": {
+      "path": "8e914c9dff33a928d36fdcdb73a9df2b8a90bf49",
+      "bytes": 333,
+      "sha256": "f93b00b5037b99d748cd1965e1ec710dea0e81773c6712af7e171659e3d2e728"
+    },
+    "local_revision": "2ed96efc8007c57d589a31ceb435eb768491c439",
+    "dtype": "bfloat16",
+    "execution": "eager",
+    "device": "NVIDIA GeForce GTX 1650",
+    "capability": [
+      7,
+      5
+    ],
+    "native_bf16": false,
+    "bf16_with_emulation": true,
+    "free_vram_bytes_before_load": 3454795776,
+    "total_vram_bytes": 4294639616
+  },
+  "relation_index": {
+    "25": {
+      "child_table": "constructor_standings",
+      "fk_column": "raceId",
+      "parent_table": "races",
+      "parent_table_idx": 3
+    },
+    "2958": {
+      "child_table": "qualifying",
+      "fk_column": "raceId",
+      "parent_table": "races",
+      "parent_table_idx": 3
+    },
+    "4": {
+      "child_table": "results",
+      "fk_column": "driverId",
+      "parent_table": "drivers",
+      "parent_table_idx": 5
+    },
+    "33": {
+      "child_table": "driver-position",
+      "fk_column": "driverId",
+      "parent_table": "drivers",
+      "parent_table_idx": 5
+    },
+    "2300": {
+      "child_table": "standings",
+      "fk_column": "driverId",
+      "parent_table": "drivers",
+      "parent_table_idx": 5
+    },
+    "2307": {
+      "child_table": "constructor_results",
+      "fk_column": "raceId",
+      "parent_table": "races",
+      "parent_table_idx": 3
+    },
+    "21": {
+      "child_table": "driver-top3",
+      "fk_column": "driverId",
+      "parent_table": "drivers",
+      "parent_table_idx": 5
+    },
+    "2299": {
+      "child_table": "standings",
+      "fk_column": "raceId",
+      "parent_table": "races",
+      "parent_table_idx": 3
+    },
+    "6": {
+      "child_table": "results",
+      "fk_column": "constructorId",
+      "parent_table": "constructors",
+      "parent_table_idx": 7
+    },
+    "2686": {
+      "child_table": "driver-dnf",
+      "fk_column": "driverId",
+      "parent_table": "drivers",
+      "parent_table_idx": 5
+    },
+    "2959": {
+      "child_table": "qualifying",
+      "fk_column": "driverId",
+      "parent_table": "drivers",
+      "parent_table_idx": 5
+    },
+    "2308": {
+      "child_table": "constructor_results",
+      "fk_column": "constructorId",
+      "parent_table": "constructors",
+      "parent_table_idx": 7
+    },
+    "2967": {
+      "child_table": "races",
+      "fk_column": "circuitId",
+      "parent_table": "circuits",
+      "parent_table_idx": 2688
+    },
+    "2": {
+      "child_table": "results",
+      "fk_column": "raceId",
+      "parent_table": "races",
+      "parent_table_idx": 3
+    },
+    "2960": {
+      "child_table": "qualifying",
+      "fk_column": "constructorId",
+      "parent_table": "constructors",
+      "parent_table_idx": 7
+    },
+    "26": {
+      "child_table": "constructor_standings",
+      "fk_column": "constructorId",
+      "parent_table": "constructors",
+      "parent_table_idx": 7
+    }
+  },
+  "arms": {
+    "task_query_cycles_s101": {
+      "auroc": 0.5508661494168741,
+      "predictions": "preds_task_query_cycles_s101.npz",
+      "prediction_sha256": "8e116e3b0fc65c98f8662aa980acc515a761496358715df152e8dd6f90c65be1",
+      "exposure": "validation_exposure_task_query_cycles_s101.npz",
+      "exposure_sha256": "bf25a3ee4211e5f4b5ea0a0c84983fbae99733b3bd44256849f04e617c58073d",
+      "reused_clean_no_changes": false,
+      "totals": {
+        "eligible_edges": 6749,
+        "changed_edges": 1781,
+        "singleton_edges": 2108,
+        "unrewirable_edges": 0,
+        "unrewirable_strata": 0,
+        "max_changed_edges": 1781
+      },
+      "unchanged_queries": 33
+    },
+    "task_query_cycles_s202": {
+      "auroc": 0.5496754989508612,
+      "predictions": "preds_task_query_cycles_s202.npz",
+      "prediction_sha256": "9410311f18ace7a93159a77803229d0eca1c1651f615f87a7c63c709ed38b97d",
+      "exposure": "validation_exposure_task_query_cycles_s202.npz",
+      "exposure_sha256": "81309c80d2c13c3a2e843e4e54c6693b53236e99f5d64dc384437ea07aaf7822",
+      "reused_clean_no_changes": false,
+      "totals": {
+        "eligible_edges": 6749,
+        "changed_edges": 1747,
+        "singleton_edges": 2108,
+        "unrewirable_edges": 0,
+        "unrewirable_strata": 0,
+        "max_changed_edges": 1747
+      },
+      "unchanged_queries": 36
+    },
+    "task_query_cycles_s303": {
+      "auroc": 0.5772361294100424,
+      "predictions": "preds_task_query_cycles_s303.npz",
+      "prediction_sha256": "b5aca20e400724e484a91110054235a7b7bbaabd0af09a140a447379f51f9878",
+      "exposure": "validation_exposure_task_query_cycles_s303.npz",
+      "exposure_sha256": "17413863547f1a185c3f72bed7448b939c7da92c73e60698a1598d0b5c88feb7",
+      "reused_clean_no_changes": false,
+      "totals": {
+        "eligible_edges": 6749,
+        "changed_edges": 1767,
+        "singleton_edges": 2108,
+        "unrewirable_edges": 0,
+        "unrewirable_strata": 0,
+        "max_changed_edges": 1767
+      },
+      "unchanged_queries": 28
+    },
+    "task_other_cycles_s101": {
+      "auroc": 0.5330405504318548,
+      "predictions": "preds_task_other_cycles_s101.npz",
+      "prediction_sha256": "ec3bb8c1078281b4d04ebb61c1c14e0b8b1709336d807ed6ad567adecc85434b",
+      "exposure": "validation_exposure_task_other_cycles_s101.npz",
+      "exposure_sha256": "68c1872bc0250d4df39de049723475840ef64293883eb4ab428e216c8ec8f61e",
+      "reused_clean_no_changes": false,
+      "totals": {
+        "eligible_edges": 6749,
+        "changed_edges": 1179,
+        "singleton_edges": 2108,
+        "unrewirable_edges": 0,
+        "unrewirable_strata": 0,
+        "max_changed_edges": 1179
+      },
+      "unchanged_queries": 282
+    },
+    "task_other_cycles_s202": {
+      "auroc": 0.5498365295466745,
+      "predictions": "preds_task_other_cycles_s202.npz",
+      "prediction_sha256": "d3f47de8d8de0006e9a4a26f8e42eb42424b61981917aafa86000a8a78031e4c",
+      "exposure": "validation_exposure_task_other_cycles_s202.npz",
+      "exposure_sha256": "3cda8884a9f106783a1dda55966b799a5987c578dec15895bf491e578b157099",
+      "reused_clean_no_changes": false,
+      "totals": {
+        "eligible_edges": 6749,
+        "changed_edges": 1213,
+        "singleton_edges": 2108,
+        "unrewirable_edges": 0,
+        "unrewirable_strata": 0,
+        "max_changed_edges": 1213
+      },
+      "unchanged_queries": 277
+    },
+    "task_other_cycles_s303": {
+      "auroc": 0.5444981213097155,
+      "predictions": "preds_task_other_cycles_s303.npz",
+      "prediction_sha256": "d93bf5fee1743fa37044e6b305a1a35870c6d37d4a754faad6c6a605bd48f554",
+      "exposure": "validation_exposure_task_other_cycles_s303.npz",
+      "exposure_sha256": "e0cf3e6e1def4b1607f1ddf2b6026264b1ddc04e5ac1dfd0d38b517b1d18ce77",
+      "reused_clean_no_changes": false,
+      "totals": {
+        "eligible_edges": 6749,
+        "changed_edges": 1193,
+        "singleton_edges": 2108,
+        "unrewirable_edges": 0,
+        "unrewirable_strata": 0,
+        "max_changed_edges": 1193
+      },
+      "unchanged_queries": 285
+    }
+  },
+  "reference_clean": {
+    "path": "preds_base.npz",
+    "bytes": 14798,
+    "sha256": "8106e63ad3cc30e49de4efb4a3d37b090c7607d687896a483e35ea8fc71e99a4"
+  },
+  "elapsed_sec": 158.798761844635,
+  "model_forward_attempts": 528
+}

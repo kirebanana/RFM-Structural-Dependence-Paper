@@ -1,0 +1,98 @@
+{
+  "1769063": {
+    "child_table": "study-outcome",
+    "fk_column": "nct_id",
+    "parent_table": "studies",
+    "parent_table_idx": 3
+  },
+  "2095213": {
+    "child_table": "outcomes",
+    "fk_column": "nct_id",
+    "parent_table": "studies",
+    "parent_table_idx": 3
+  },
+  "2": {
+    "child_table": "designs",
+    "fk_column": "nct_id",
+    "parent_table": "studies",
+    "parent_table_idx": 3
+  },
+  "618540": {
+    "child_table": "interventions_studies",
+    "fk_column": "nct_id",
+    "parent_table": "studies",
+    "parent_table_idx": 3
+  },
+  "1769075": {
+    "child_table": "eligibilities",
+    "fk_column": "nct_id",
+    "parent_table": "studies",
+    "parent_table_idx": 3
+  },
+  "37885": {
+    "child_table": "conditions_studies",
+    "fk_column": "condition_id",
+    "parent_table": "conditions",
+    "parent_table_idx": 37886
+  },
+  "1636355": {
+    "child_table": "outcome_analyses",
+    "fk_column": "outcome_id",
+    "parent_table": "outcomes",
+    "parent_table_idx": 669187
+  },
+  "1636354": {
+    "child_table": "outcome_analyses",
+    "fk_column": "nct_id",
+    "parent_table": "studies",
+    "parent_table_idx": 3
+  },
+  "3161985": {
+    "child_table": "facilities_studies",
+    "fk_column": "facility_id",
+    "parent_table": "facilities",
+    "parent_table_idx": 41863
+  },
+  "3162002": {
+    "child_table": "drop_withdrawals",
+    "fk_column": "nct_id",
+    "parent_table": "studies",
+    "parent_table_idx": 3
+  },
+  "3161984": {
+    "child_table": "facilities_studies",
+    "fk_column": "nct_id",
+    "parent_table": "studies",
+    "parent_table_idx": 3
+  },
+  "618541": {
+    "child_table": "interventions_studies",
+    "fk_column": "intervention_id",
+    "parent_table": "interventions",
+    "parent_table_idx": 618542
+  },
+  "37884": {
+    "child_table": "conditions_studies",
+    "fk_column": "nct_id",
+    "parent_table": "studies",
+    "parent_table_idx": 3
+  },
+  "1769067": {
+    "child_table": "sponsors_studies",
+    "fk_column": "nct_id",
+    "parent_table": "studies",
+    "parent_table_idx": 3
+  },
+  "1769068": {
+    "child_table": "sponsors_studies",
+    "fk_column": "sponsor_id",
+    "parent_table": "sponsors",
+    "parent_table_idx": 575151
+  },
+  "3161989": {
+    "child_table": "reported_event_totals",
+    "fk_column": "nct_id",
+    "parent_table": "studies",
+    "parent_table_idx": 3
+  }
+}

@@ -1,0 +1,292 @@
+{
+  "status": "complete",
+  "complete": true,
+  "evidence_kind": "exploratory_relation_controls",
+  "reference": "2026-10-05_validated",
+  "groups": {
+    "labeled_support_only": [
+      2686
+    ]
+  },
+  "seeds": [
+    101,
+    202,
+    303
+  ],
+  "policy": {
+    "version": "query_available_incidence_v1",
+    "dataset": "rel-f1",
+    "cutoff_rule": "temporal rows <= query; support label timestamp + horizon <= query",
+    "timeless_rule": "explicit source manifest time_col=null; benchmark static covariates",
+    "fanout_rule": "measured consequence of incidence, not a preservation gate",
+    "refill_removed_cells": false,
+    "tables": [
+      {
+        "table": "driver-top3:Val",
+        "start": 121076,
+        "stop": 121664,
+        "time_col": "date",
+        "label_column": 22,
+        "horizon_seconds": 2592000
+      },
+      {
+        "table": "qualifying:Db",
+        "start": 26486,
+        "stop": 36301,
+        "time_col": "date",
+        "label_column": null,
+        "horizon_seconds": 0
+      },
+      {
+        "table": "drivers:Db",
+        "start": 25629,
+        "stop": 26486,
+        "time_col": null,
+        "label_column": null,
+        "horizon_seconds": 0
+      },
+      {
+        "table": "driver-position:Val",
+        "start": 118498,
+        "stop": 118997,
+        "time_col": "date",
+        "label_column": 34,
+        "horizon_seconds": 5184000
+      },
+      {
+        "table": "standings:Db",
+        "start": 63482,
+        "stop": 97606,
+        "time_col": "date",
+        "label_column": null,
+        "horizon_seconds": 0
+      },
+      {
+        "table": "driver-dnf:Train",
+        "start": 98308,
+        "stop": 109719,
+        "time_col": "date",
+        "label_column": 2687,
+        "horizon_seconds": 2592000
+      },
+      {
+        "table": "constructors:Db",
+        "start": 25418,
+        "stop": 25629,
+        "time_col": null,
+        "label_column": null,
+        "horizon_seconds": 0
+      },
+      {
+        "table": "driver-top3:Train",
+        "start": 119723,
+        "stop": 121076,
+        "time_col": "date",
+        "label_column": 22,
+        "horizon_seconds": 2592000
+      },
+      {
+        "table": "results:Db",
+        "start": 37402,
+        "stop": 63482,
+        "time_col": "date",
+        "label_column": null,
+        "horizon_seconds": 0
+      },
+      {
+        "table": "constructor_standings:Db",
+        "start": 12367,
+        "stop": 25418,
+        "time_col": "date",
+        "label_column": null,
+        "horizon_seconds": 0
+      },
+      {
+        "table": "driver-top3:Test",
+        "start": 118997,
+        "stop": 119723,
+        "time_col": "date",
+        "label_column": 22,
+        "horizon_seconds": 2592000
+      },
+      {
+        "table": "circuits:Db",
+        "start": 0,
+        "stop": 77,
+        "time_col": null,
+        "label_column": null,
+        "horizon_seconds": 0
+      },
+      {
+        "table": "driver-position:Train",
+        "start": 111045,
+        "stop": 118498,
+        "time_col": "date",
+        "label_column": 34,
+        "horizon_seconds": 5184000
+      },
+      {
+        "table": "constructor_results:Db",
+        "start": 77,
+        "stop": 12367,
+        "time_col": "date",
+        "label_column": null,
+        "horizon_seconds": 0
+      },
+      {
+        "table": "races:Db",
+        "start": 36301,
+        "stop": 37402,
+        "time_col": "date",
+        "label_column": null,
+        "horizon_seconds": 0
+      },
+      {
+        "table": "driver-dnf:Val",
+        "start": 109719,
+        "stop": 110285,
+        "time_col": "date",
+        "label_column": 2687,
+        "horizon_seconds": 2592000
+      },
+      {
+        "table": "driver-dnf:Test",
+        "start": 97606,
+        "stop": 98308,
+        "time_col": "date",
+        "label_column": 2687,
+        "horizon_seconds": 2592000
+      },
+      {
+        "table": "driver-position:Test",
+        "start": 110285,
+        "stop": 111045,
+        "time_col": "date",
+        "label_column": 34,
+        "horizon_seconds": 5184000
+      }
+    ],
+    "source_manifests": {
+      "dataset_manifest": {
+        "path": "dc0f363e75d49c21c74a12122d23e588d7099929",
+        "bytes": 1196,
+        "sha256": "ddf427fcdb7b35b4363834b167e1d399615fdf41b9f589f54842f484c65a8f9d"
+      },
+      "driver-dnf": {
+        "path": "b8f4bef0ea47c2a88fce303f8cecfe0054d25ee4",
+        "bytes": 787,
+        "sha256": "f2f77d17e8737246d0be482dd4bef13de1395db9ce0bc79ecf3c6d430e6aa64a"
+      },
+      "driver-position": {
+        "path": "2f50cc371e34cec14aa5838cd87c840ce2f85894",
+        "bytes": 752,
+        "sha256": "9c692d022e9b1b9d7524bc82dc7a0f4cf039817598de84b5a7dad0baa6947227"
+      },
+      "driver-top3": {
+        "path": "f709f12a7b179eaacc5462280aab46c4513a8e45",
+        "bytes": 827,
+        "sha256": "c3da8e2eca1489b1f8b08410553e3d2619a68ca4e210f1f13c2d5cdec2f980ad"
+      }
+    }
+  },
+  "cycle_modes": {
+    "labeled_support_only": null
+  },
+  "source_selection": {
+    "labeled_support_only": "visible_labeled_support"
+  },
+  "matching_rule": "source-selected controls rematch within their selected pool; others restrict full assignment",
+  "contexts": {
+    "48": {
+      "status": "complete",
+      "elapsed_sec": 115.97407078742981
+    },
+    "128": {
+      "status": "complete",
+      "elapsed_sec": 137.2297282218933
+    }
+  },
+  "provenance": {
+    "source": {
+      "revision": "81e4fa4fdb98ea6ce5973ec4772f91dc4ca9a468",
+      "worktree_status": [
+        " M docs/REPRODUCIBILITY.md",
+        " M experiments/run_clean_rewire.py",
+        " M src/rfm_structure/analysis.py",
+        " M src/rfm_structure/rewiring.py",
+        " M src/rfm_structure/validation.py",
+        " M tests/test_runner.py",
+        " M vendor/relational-transformer/rustler/src/pre.rs",
+        "?? experiments/analyze_database_replications.py",
+        "?? experiments/analyze_relation_controls.py",
+        "?? experiments/run_database_replications.py",
+        "?? experiments/run_relation_controls.py",
+        "?? src/rfm_structure/exploratory.py",
+        "?? src/rfm_structure/relation_controls.py",
+        "?? src/rfm_structure/replication.py",
+        "?? tests/test_exploratory.py",
+        "?? tests/test_native_temporal.py",
+        "?? tests/test_relation_controls.py",
+        "?? tests/test_replication.py",
+        "?? tests/test_visible_support.py"
+      ],
+      "source_sha256": "3398883e6dc3dcee5208636c64be408800f84fccdc877059c8630beaa7a6fc5c"
+    },
+    "software": {
+      "python": "3.12.13",
+      "numpy": "2.5.3",
+      "scipy": "1.18.1",
+      "scikit-learn": "1.9.1",
+      "torch": "2.13.0",
+      "relbench": "3.0.1",
+      "relational-transformer": "1.1.0"
+    },
+    "preprocessing": {
+      "meta.json": {
+        "path": "meta.json",
+        "bytes": 1442,
+        "sha256": "ebe73f17e3ff2d4a99112c0ace343b9cf49781baf9145015cdf9630327b36dfc"
+      },
+      "table_info.json": {
+        "path": "table_info.json",
+        "bytes": 1102,
+        "sha256": "c66454e7849345fce446c626b5c945941f66132ee51250fc3871be57c9afc537"
+      },
+      "column_index.json": {
+        "path": "column_index.json",
+        "bytes": 2205,
+        "sha256": "99b2c1fb5c9eeb0e9a9937b2edaf8b634ad8e20502faf0f073d8cf03f25fcc31"
+      },
+      "relation_index.json": {
+        "path": "relation_index.json",
+        "bytes": 2216,
+        "sha256": "e4b4beca945d366529e380905ab63c16d9416ca4c2c3e407bd5423fdeb0fa0dd"
+      },
+      "nodes.rkyv": {
+        "path": "nodes.rkyv",
+        "bytes": 42937128,
+        "sha256": "125aee14d76335aa32ab0a3c55c75e24cf113bbfef8adfd8d87d74317d8f87ae"
+      },
+      "offsets.rkyv": {
+        "path": "offsets.rkyv",
+        "bytes": 973336,
+        "sha256": "3f084e580a16ef37b67e9a62de4ac1c94678c509c2d8e5c6f1370e779cba3cb3"
+      },
+      "p2f_adj.rkyv": {
+        "path": "p2f_adj.rkyv",
+        "bytes": 6982120,
+        "sha256": "602b423f4a85f3a687e7fb581da3a6daec9446d10508b87aef6159d01547c32b"
+      },
+      "text_emb_all-MiniLM-L12-v2.bin": {
+        "path": "text_emb_all-MiniLM-L12-v2.bin",
+        "bytes": 2349312,
+        "sha256": "287f5dcfda2958608b8661f2ab3923c02aad630b4a4aa6a7c570b830ed946f89"
+      },
+      "text.json": {
+        "path": "text.json",
+        "bytes": 33221,
+        "sha256": "da948653ca757f5cb6f4d4c09ac411ab463b6f2a0c3f801095ca103b96ffe94d"
+      }
+    }
+  }
+}

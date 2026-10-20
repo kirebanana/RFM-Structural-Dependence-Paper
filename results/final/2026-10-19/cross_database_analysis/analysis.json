@@ -1,0 +1,790 @@
+[
+  {
+    "database": "rel-arxiv",
+    "task": "paper-citation",
+    "protocol": "frozen_task_entity_vs_database_v1",
+    "panel": {
+      "positive": 225,
+      "dates": 1,
+      "entities": 512
+    },
+    "official_test_size": 193696,
+    "queries": 512,
+    "run": "results/final/2026-10-19/arxiv",
+    "contexts": {
+      "48": {
+        "clean_auc": 0.6401393728222996,
+        "groups": {
+          "task_entity": {
+            "auroc_mean": 0.6125874306362111,
+            "auroc_range": [
+              0.6068137824235385,
+              0.6160046457607433
+            ],
+            "delta_clean": -0.027551942186088474,
+            "aurocs_by_seed": [
+              0.6149438637243515,
+              0.6068137824235385,
+              0.6160046457607433
+            ],
+            "mean_abs_shift": 0.1103760904322068,
+            "pooled_median_abs_shift": 0.04296875,
+            "paired_by_seed": [
+              {
+                "mean_absolute_raw_shift": 0.11036783829331398,
+                "median_absolute_raw_shift": 0.04296875,
+                "pearson": 0.857119503768279,
+                "pearson_status": "defined"
+              },
+              {
+                "mean_absolute_raw_shift": 0.10860272869467735,
+                "median_absolute_raw_shift": 0.042236328125,
+                "pearson": 0.8599936903047262,
+                "pearson_status": "defined"
+              },
+              {
+                "mean_absolute_raw_shift": 0.11215770430862904,
+                "median_absolute_raw_shift": 0.044921875,
+                "pearson": 0.8546676789523246,
+                "pearson_status": "defined"
+              }
+            ],
+            "changed_edges_per_seed": [
+              2552,
+              2552,
+              2552
+            ],
+            "affected_queries_per_seed": [
+              512,
+              512,
+              512
+            ],
+            "auroc_uncertainty": {
+              "point": -0.02755194218608854,
+              "replicates": 2000,
+              "date_percentile_95": null,
+              "date_defined_replicates": 0,
+              "date_status": "single_cluster_not_estimable",
+              "entity_percentile_95": [
+                -0.04703103920129428,
+                -0.008125326399789473
+              ],
+              "entity_defined_replicates": 2000,
+              "crossed_percentile_95": [
+                -0.04703103920129428,
+                -0.008125326399789473
+              ],
+              "crossed_defined_replicates": 2000,
+              "crossed_status": "only_one_varying_cluster_axis",
+              "leave_one_date_range": null,
+              "leave_one_entity_range": [
+                -0.030064750064750068,
+                -0.025429836568773845
+              ]
+            }
+          },
+          "database": {
+            "auroc_mean": 0.6401290489095367,
+            "auroc_range": [
+              0.6373441734417344,
+              0.6416647309330237
+            ],
+            "delta_clean": -1.0323912762899567e-05,
+            "aurocs_by_seed": [
+              0.6373441734417344,
+              0.6413782423538521,
+              0.6416647309330237
+            ],
+            "mean_abs_shift": 0.017459383234381676,
+            "pooled_median_abs_shift": 0.006103515625,
+            "paired_by_seed": [
+              {
+                "mean_absolute_raw_shift": 0.017950907349586487,
+                "median_absolute_raw_shift": 0.005859375,
+                "pearson": 0.9950521865913635,
+                "pearson_status": "defined"
+              },
+              {
+                "mean_absolute_raw_shift": 0.016941698268055916,
+                "median_absolute_raw_shift": 0.005859375,
+                "pearson": 0.995622323728684,
+                "pearson_status": "defined"
+              },
+              {
+                "mean_absolute_raw_shift": 0.017485544085502625,
+                "median_absolute_raw_shift": 0.0068359375,
+                "pearson": 0.9954896216900158,
+                "pearson_status": "defined"
+              }
+            ],
+            "changed_edges_per_seed": [
+              5540,
+              5540,
+              5540
+            ],
+            "affected_queries_per_seed": [
+              507,
+              507,
+              507
+            ],
+            "auroc_uncertainty": {
+              "point": -1.0323912762938766e-05,
+              "replicates": 2000,
+              "date_percentile_95": null,
+              "date_defined_replicates": 0,
+              "date_status": "single_cluster_not_estimable",
+              "entity_percentile_95": [
+                -0.005285987890056899,
+                0.004950433080504998
+              ],
+              "entity_defined_replicates": 2000,
+              "crossed_percentile_95": [
+                -0.005285987890056899,
+                0.004950433080504998
+              ],
+              "crossed_defined_replicates": 2000,
+              "crossed_status": "only_one_varying_cluster_axis",
+              "leave_one_date_range": null,
+              "leave_one_entity_range": [
+                -0.0007466401194624606,
+                0.0010152810152810332
+              ]
+            }
+          }
+        },
+        "availability": {
+          "original_token_counts": 24576,
+          "removed_future_tokens": 20,
+          "removed_unmatured_label_tokens": 1039,
+          "declared_timeless_tokens": 2093
+        },
+        "task_minus_database_abs_sensitivity": {
+          "point": 0.09291670719782512,
+          "entity_percentile_95": [
+            0.08229128462262453,
+            0.10447213070777557
+          ],
+          "replicates": 2000,
+          "scope": "conditional on test date and three matching seeds"
+        },
+        "task_minus_database_auroc": {
+          "point": -0.0275416182733256,
+          "replicates": 2000,
+          "date_percentile_95": null,
+          "date_defined_replicates": 0,
+          "date_status": "single_cluster_not_estimable",
+          "entity_percentile_95": [
+            -0.04683735603969192,
+            -0.008216231658441273
+          ],
+          "entity_defined_replicates": 2000,
+          "crossed_percentile_95": [
+            -0.04683735603969192,
+            -0.008216231658441273
+          ],
+          "crossed_defined_replicates": 2000,
+          "crossed_status": "only_one_varying_cluster_axis",
+          "leave_one_date_range": null,
+          "leave_one_entity_range": [
+            -0.030054390054389923,
+            -0.02541946656711458
+          ]
+        }
+      },
+      "128": {
+        "clean_auc": 0.6920015485869145,
+        "groups": {
+          "task_entity": {
+            "auroc_mean": 0.6594683184927087,
+            "auroc_range": [
+              0.6520557491289198,
+              0.6636314363143632
+            ],
+            "delta_clean": -0.032533230094205834,
+            "aurocs_by_seed": [
+              0.6627177700348432,
+              0.6636314363143632,
+              0.6520557491289198
+            ],
+            "mean_abs_shift": 0.15300557017326355,
+            "pooled_median_abs_shift": 0.0625,
+            "paired_by_seed": [
+              {
+                "mean_absolute_raw_shift": 0.15850535780191422,
+                "median_absolute_raw_shift": 0.060791015625,
+                "pearson": 0.7721266583976455,
+                "pearson_status": "defined"
+              },
+              {
+                "mean_absolute_raw_shift": 0.14568714052438736,
+                "median_absolute_raw_shift": 0.0595703125,
+                "pearson": 0.8157537239751061,
+                "pearson_status": "defined"
+              },
+              {
+                "mean_absolute_raw_shift": 0.15482421219348907,
+                "median_absolute_raw_shift": 0.06640625,
+                "pearson": 0.7789055600632123,
+                "pearson_status": "defined"
+              }
+            ],
+            "changed_edges_per_seed": [
+              4588,
+              4588,
+              4588
+            ],
+            "affected_queries_per_seed": [
+              512,
+              512,
+              512
+            ],
+            "auroc_uncertainty": {
+              "point": -0.032533230094205716,
+              "replicates": 2000,
+              "date_percentile_95": null,
+              "date_defined_replicates": 0,
+              "date_status": "single_cluster_not_estimable",
+              "entity_percentile_95": [
+                -0.05532370590512628,
+                -0.00928291191984925
+              ],
+              "entity_defined_replicates": 2000,
+              "crossed_percentile_95": [
+                -0.05532370590512628,
+                -0.00928291191984925
+              ],
+              "crossed_defined_replicates": 2000,
+              "crossed_status": "only_one_varying_cluster_axis",
+              "leave_one_date_range": null,
+              "leave_one_entity_range": [
+                -0.035493923179027775,
+                -0.02994078729052596
+              ]
+            }
+          },
+          "database": {
+            "auroc_mean": 0.6896244676732483,
+            "auroc_range": [
+              0.6885791715060008,
+              0.6907936507936507
+            ],
+            "delta_clean": -0.002377080913666285,
+            "aurocs_by_seed": [
+              0.6907936507936507,
+              0.6885791715060008,
+              0.6895005807200929
+            ],
+            "mean_abs_shift": 0.02692771392563979,
+            "pooled_median_abs_shift": 0.01171875,
+            "paired_by_seed": [
+              {
+                "mean_absolute_raw_shift": 0.02818959578871727,
+                "median_absolute_raw_shift": 0.01171875,
+                "pearson": 0.9912719852748498,
+                "pearson_status": "defined"
+              },
+              {
+                "mean_absolute_raw_shift": 0.027224479243159294,
+                "median_absolute_raw_shift": 0.01171875,
+                "pearson": 0.9909758433669478,
+                "pearson_status": "defined"
+              },
+              {
+                "mean_absolute_raw_shift": 0.0253690667450428,
+                "median_absolute_raw_shift": 0.01123046875,
+                "pearson": 0.9923366142952941,
+                "pearson_status": "defined"
+              }
+            ],
+            "changed_edges_per_seed": [
+              21799,
+              21799,
+              21799
+            ],
+            "affected_queries_per_seed": [
+              512,
+              512,
+              512
+            ],
+            "auroc_uncertainty": {
+              "point": -0.0023770809136662804,
+              "replicates": 2000,
+              "date_percentile_95": null,
+              "date_defined_replicates": 0,
+              "date_status": "single_cluster_not_estimable",
+              "entity_percentile_95": [
+                -0.010019358002397175,
+                0.005910028459500233
+              ],
+              "entity_defined_replicates": 2000,
+              "crossed_percentile_95": [
+                -0.010019358002397175,
+                0.005910028459500233
+              ],
+              "crossed_defined_replicates": 2000,
+              "crossed_status": "only_one_varying_cluster_axis",
+              "leave_one_date_range": null,
+              "leave_one_entity_range": [
+                -0.004127260660361731,
+                -0.0009712509712510586
+              ]
+            }
+          }
+        },
+        "availability": {
+          "original_token_counts": 65536,
+          "removed_future_tokens": 94,
+          "removed_unmatured_label_tokens": 1149,
+          "declared_timeless_tokens": 4592
+        },
+        "task_minus_database_abs_sensitivity": {
+          "point": 0.12607785624762377,
+          "entity_percentile_95": [
+            0.11115751659187179,
+            0.1405678884902348
+          ],
+          "replicates": 2000,
+          "scope": "conditional on test date and three matching seeds"
+        },
+        "task_minus_database_auroc": {
+          "point": -0.030156149180539434,
+          "replicates": 2000,
+          "date_percentile_95": null,
+          "date_defined_replicates": 0,
+          "date_status": "single_cluster_not_estimable",
+          "entity_percentile_95": [
+            -0.05178974936363919,
+            -0.009596650777598399
+          ],
+          "entity_defined_replicates": 2000,
+          "crossed_percentile_95": [
+            -0.05178974936363919,
+            -0.009596650777598399
+          ],
+          "crossed_defined_replicates": 2000,
+          "crossed_status": "only_one_varying_cluster_axis",
+          "leave_one_date_range": null,
+          "leave_one_entity_range": [
+            -0.03221181765389092,
+            -0.02755568690890986
+          ]
+        }
+      }
+    },
+    "interpretation": "fixed small replication; no full-test or temporal-generalization claim",
+    "context_sensitivity_change": {
+      "task_entity": {
+        "point": 0.042629479741056756,
+        "entity_percentile_95": [
+          0.02618799031091233,
+          0.05990576546949644
+        ],
+        "replicates": 2000,
+        "scope": "conditional on test date and three matching seeds"
+      },
+      "database": {
+        "point": 0.009468330691258114,
+        "entity_percentile_95": [
+          0.005298901457960406,
+          0.013788466838498907
+        ],
+        "replicates": 2000,
+        "scope": "conditional on test date and three matching seeds"
+      }
+    }
+  },
+  {
+    "database": "rel-trial",
+    "task": "study-outcome",
+    "protocol": "frozen_task_entity_vs_database_v1",
+    "panel": {
+      "positive": 292,
+      "dates": 1,
+      "entities": 512
+    },
+    "official_test_size": 825,
+    "queries": 512,
+    "run": "results/final/2026-10-19/trial",
+    "contexts": {
+      "48": {
+        "clean_auc": 0.5489492528019926,
+        "groups": {
+          "task_entity": {
+            "auroc_mean": 0.5393394562058945,
+            "auroc_range": [
+              0.5282067247820673,
+              0.5464430261519302
+            ],
+            "delta_clean": -0.009609796596098064,
+            "aurocs_by_seed": [
+              0.5433686176836862,
+              0.5464430261519302,
+              0.5282067247820673
+            ],
+            "mean_abs_shift": 0.01308854048450788,
+            "pooled_median_abs_shift": 0.0067138671875,
+            "paired_by_seed": [
+              {
+                "mean_absolute_raw_shift": 0.012998336926102638,
+                "median_absolute_raw_shift": 0.0068359375,
+                "pearson": 0.9626320749720163,
+                "pearson_status": "defined"
+              },
+              {
+                "mean_absolute_raw_shift": 0.013294929638504982,
+                "median_absolute_raw_shift": 0.0068359375,
+                "pearson": 0.9418688060555638,
+                "pearson_status": "defined"
+              },
+              {
+                "mean_absolute_raw_shift": 0.012972354888916016,
+                "median_absolute_raw_shift": 0.0064697265625,
+                "pearson": 0.942146215654219,
+                "pearson_status": "defined"
+              }
+            ],
+            "changed_edges_per_seed": [
+              1476,
+              1476,
+              1476
+            ],
+            "affected_queries_per_seed": [
+              512,
+              512,
+              512
+            ],
+            "auroc_uncertainty": {
+              "point": -0.009609796596097982,
+              "replicates": 2000,
+              "date_percentile_95": null,
+              "date_defined_replicates": 0,
+              "date_status": "single_cluster_not_estimable",
+              "entity_percentile_95": [
+                -0.06011216820383187,
+                0.03982285715053119
+              ],
+              "entity_defined_replicates": 2000,
+              "crossed_percentile_95": [
+                -0.06011216820383187,
+                0.03982285715053119
+              ],
+              "crossed_defined_replicates": 2000,
+              "crossed_status": "only_one_varying_cluster_axis",
+              "leave_one_date_range": null,
+              "leave_one_entity_range": [
+                -0.013232105252184101,
+                -0.005984028689977272
+              ]
+            }
+          },
+          "database": {
+            "auroc_mean": 0.5413786841012868,
+            "auroc_range": [
+              0.5409090909090909,
+              0.5416173723536737
+            ],
+            "delta_clean": -0.0075705687007058264,
+            "aurocs_by_seed": [
+              0.5416095890410959,
+              0.5409090909090909,
+              0.5416173723536737
+            ],
+            "mean_abs_shift": 0.002204174796740214,
+            "pooled_median_abs_shift": 0.0001220703125,
+            "paired_by_seed": [
+              {
+                "mean_absolute_raw_shift": 0.002210572361946106,
+                "median_absolute_raw_shift": 0.0001220703125,
+                "pearson": 0.9980712957171978,
+                "pearson_status": "defined"
+              },
+              {
+                "mean_absolute_raw_shift": 0.0021911412477493286,
+                "median_absolute_raw_shift": 0.0001220703125,
+                "pearson": 0.9980712046920265,
+                "pearson_status": "defined"
+              },
+              {
+                "mean_absolute_raw_shift": 0.0022108107805252075,
+                "median_absolute_raw_shift": 0.0001220703125,
+                "pearson": 0.9980679207667905,
+                "pearson_status": "defined"
+              }
+            ],
+            "changed_edges_per_seed": [
+              809,
+              809,
+              809
+            ],
+            "affected_queries_per_seed": [
+              296,
+              296,
+              296
+            ],
+            "auroc_uncertainty": {
+              "point": -0.007570568700705689,
+              "replicates": 2000,
+              "date_percentile_95": null,
+              "date_defined_replicates": 0,
+              "date_status": "single_cluster_not_estimable",
+              "entity_percentile_95": [
+                -0.024906152155400513,
+                0.010165800883826563
+              ],
+              "entity_defined_replicates": 2000,
+              "crossed_percentile_95": [
+                -0.024906152155400513,
+                0.010165800883826563
+              ],
+              "crossed_defined_replicates": 2000,
+              "crossed_status": "only_one_varying_cluster_axis",
+              "leave_one_date_range": null,
+              "leave_one_entity_range": [
+                -0.00893991461001764,
+                -0.004071016033860841
+              ]
+            }
+          }
+        },
+        "availability": {
+          "original_token_counts": 24576,
+          "removed_future_tokens": 0,
+          "removed_unmatured_label_tokens": 929,
+          "declared_timeless_tokens": 1409
+        },
+        "task_minus_database_abs_sensitivity": {
+          "point": 0.010884365687767666,
+          "entity_percentile_95": [
+            0.00889047731955846,
+            0.013248187551895774
+          ],
+          "replicates": 2000,
+          "scope": "conditional on test date and three matching seeds"
+        },
+        "task_minus_database_auroc": {
+          "point": -0.0020392278953922935,
+          "replicates": 2000,
+          "date_percentile_95": null,
+          "date_defined_replicates": 0,
+          "date_status": "single_cluster_not_estimable",
+          "entity_percentile_95": [
+            -0.05584864237385893,
+            0.04795555504608085
+          ],
+          "entity_defined_replicates": 2000,
+          "crossed_percentile_95": [
+            -0.05584864237385893,
+            0.04795555504608085
+          ],
+          "crossed_defined_replicates": 2000,
+          "crossed_status": "only_one_varying_cluster_axis",
+          "leave_one_date_range": null,
+          "leave_one_entity_range": [
+            -0.005832864202164223,
+            0.0016211088175810406
+          ]
+        }
+      },
+      "128": {
+        "clean_auc": 0.535958904109589,
+        "groups": {
+          "task_entity": {
+            "auroc_mean": 0.5047737650477376,
+            "auroc_range": [
+              0.49738480697384807,
+              0.516282689912827
+            ],
+            "delta_clean": -0.031185139061851386,
+            "aurocs_by_seed": [
+              0.49738480697384807,
+              0.500653798256538,
+              0.516282689912827
+            ],
+            "mean_abs_shift": 0.02201952102283637,
+            "pooled_median_abs_shift": 0.0100860595703125,
+            "paired_by_seed": [
+              {
+                "mean_absolute_raw_shift": 0.02262289449572563,
+                "median_absolute_raw_shift": 0.009002685546875,
+                "pearson": 0.8802585463286757,
+                "pearson_status": "defined"
+              },
+              {
+                "mean_absolute_raw_shift": 0.02329268679022789,
+                "median_absolute_raw_shift": 0.011138916015625,
+                "pearson": 0.8759152716367418,
+                "pearson_status": "defined"
+              },
+              {
+                "mean_absolute_raw_shift": 0.02014298178255558,
+                "median_absolute_raw_shift": 0.0100555419921875,
+                "pearson": 0.9245579376426528,
+                "pearson_status": "defined"
+              }
+            ],
+            "changed_edges_per_seed": [
+              1497,
+              1497,
+              1497
+            ],
+            "affected_queries_per_seed": [
+              512,
+              512,
+              512
+            ],
+            "auroc_uncertainty": {
+              "point": -0.031185139061851424,
+              "replicates": 2000,
+              "date_percentile_95": null,
+              "date_defined_replicates": 0,
+              "date_status": "single_cluster_not_estimable",
+              "entity_percentile_95": [
+                -0.08626164179745471,
+                0.023181478826631574
+              ],
+              "entity_defined_replicates": 2000,
+              "crossed_percentile_95": [
+                -0.08626164179745471,
+                0.023181478826631574
+              ],
+              "crossed_defined_replicates": 2000,
+              "crossed_status": "only_one_varying_cluster_axis",
+              "leave_one_date_range": null,
+              "leave_one_entity_range": [
+                -0.03412668626592441,
+                -0.027782990346322922
+              ]
+            }
+          },
+          "database": {
+            "auroc_mean": 0.49036944790369447,
+            "auroc_range": [
+              0.4800902864259029,
+              0.4986846201743462
+            ],
+            "delta_clean": -0.04558945620589455,
+            "aurocs_by_seed": [
+              0.4986846201743462,
+              0.4923334371108343,
+              0.4800902864259029
+            ],
+            "mean_abs_shift": 0.003981746733188629,
+            "pooled_median_abs_shift": 0.0019989013671875,
+            "paired_by_seed": [
+              {
+                "mean_absolute_raw_shift": 0.003911100327968597,
+                "median_absolute_raw_shift": 0.001953125,
+                "pearson": 0.9972464722358692,
+                "pearson_status": "defined"
+              },
+              {
+                "mean_absolute_raw_shift": 0.004034142941236496,
+                "median_absolute_raw_shift": 0.0020751953125,
+                "pearson": 0.9971534506349644,
+                "pearson_status": "defined"
+              },
+              {
+                "mean_absolute_raw_shift": 0.003999996930360794,
+                "median_absolute_raw_shift": 0.00201416015625,
+                "pearson": 0.9970840275908606,
+                "pearson_status": "defined"
+              }
+            ],
+            "changed_edges_per_seed": [
+              14099,
+              14099,
+              14099
+            ],
+            "affected_queries_per_seed": [
+              512,
+              512,
+              512
+            ],
+            "auroc_uncertainty": {
+              "point": -0.04558945620589457,
+              "replicates": 2000,
+              "date_percentile_95": null,
+              "date_defined_replicates": 0,
+              "date_status": "single_cluster_not_estimable",
+              "entity_percentile_95": [
+                -0.0736178260538184,
+                -0.016480420574254893
+              ],
+              "entity_defined_replicates": 2000,
+              "crossed_percentile_95": [
+                -0.0736178260538184,
+                -0.016480420574254893
+              ],
+              "crossed_defined_replicates": 2000,
+              "crossed_status": "only_one_varying_cluster_axis",
+              "leave_one_date_range": null,
+              "leave_one_entity_range": [
+                -0.0474812868789225,
+                -0.04340766456078898
+              ]
+            }
+          }
+        },
+        "availability": {
+          "original_token_counts": 65536,
+          "removed_future_tokens": 0,
+          "removed_unmatured_label_tokens": 929,
+          "declared_timeless_tokens": 19857
+        },
+        "task_minus_database_abs_sensitivity": {
+          "point": 0.018037774289647736,
+          "entity_percentile_95": [
+            0.01474629550551375,
+            0.021727263042703265
+          ],
+          "replicates": 2000,
+          "scope": "conditional on test date and three matching seeds"
+        },
+        "task_minus_database_auroc": {
+          "point": 0.014404317144043156,
+          "replicates": 2000,
+          "date_percentile_95": null,
+          "date_defined_replicates": 0,
+          "date_status": "single_cluster_not_estimable",
+          "entity_percentile_95": [
+            -0.038358260059337144,
+            0.06596172275270226
+          ],
+          "entity_defined_replicates": 2000,
+          "crossed_percentile_95": [
+            -0.038358260059337144,
+            0.06596172275270226
+          ],
+          "crossed_defined_replicates": 2000,
+          "crossed_status": "only_one_varying_cluster_axis",
+          "leave_one_date_range": null,
+          "leave_one_entity_range": [
+            0.011300848606159153,
+            0.018129313400471303
+          ]
+        }
+      }
+    },
+    "interpretation": "fixed small replication; no full-test or temporal-generalization claim",
+    "context_sensitivity_change": {
+      "task_entity": {
+        "point": 0.008930980538328488,
+        "entity_percentile_95": [
+          0.005410778181006512,
+          0.012632328256343802
+        ],
+        "replicates": 2000,
+        "scope": "conditional on test date and three matching seeds"
+      },
+      "database": {
+        "point": 0.001777571936448415,
+        "entity_percentile_95": [
+          0.0011143584425250689,
+          0.0024334629376729327
+        ],
+        "replicates": 2000,
+        "scope": "conditional on test date and three matching seeds"
+      }
+    }
+  }
+]

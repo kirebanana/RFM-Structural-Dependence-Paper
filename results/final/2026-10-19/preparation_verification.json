@@ -1,0 +1,28 @@
+{
+  "rel-arxiv": {
+    "encoded_text_count": 34515,
+    "context_fingerprints": {
+      "48": "70f8fe66653fdb0b51266401e6afc26f689acb6935a48732e08601031125d46e",
+      "128": "704dd8500e9d1f030c89e402128e0a65031f36c554cb5c5784a688adbf8d6039"
+    },
+    "encoder_revision": "a50ef00143b4d5391434df20ae11632588ac25be",
+    "encoder_dtype": "float32",
+    "stored_dtype": "bfloat16",
+    "queries": 512,
+    "embedding_sha256": "67dfc46ab1ed3672b371986db3ce37c6366c799e94c9ac2b7d1e2f0355ed5c8d",
+    "status": "exact coverage IDs/fingerprints, file hash and finite/NaN layout verified; not re-encoded"
+  },
+  "rel-trial": {
+    "encoded_text_count": 12084,
+    "context_fingerprints": {
+      "48": "32da60560e548725fc37fa5b08cfbb8f81cba0d40fb25ac962d538e2ab6eeb3e",
+      "128": "af9227a59d663dbb6993a0b126f4f069ef8b500be18d21bc7ae6de5f1b150fe8"
+    },
+    "encoder_revision": "a50ef00143b4d5391434df20ae11632588ac25be",
+    "encoder_dtype": "float32",
+    "stored_dtype": "bfloat16",
+    "queries": 512,
+    "embedding_sha256": "218db87740b8d66f8c809cb647f9d68dd6420ba4bfd4363e44444582bcbe3d31",
+    "status": "exact coverage IDs/fingerprints, file hash and finite/NaN layout verified; not re-encoded"
+  }
+}

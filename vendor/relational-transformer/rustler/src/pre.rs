@@ -613,6 +613,14 @@ pub fn main(cli: Cli) {
                 node.node_idx = node_idx;
                 node.table_name_idx = table_name_idx;
 
+                // Temporal entity tables can have no outgoing FK columns
+                // (e.g. rel-trial studies). Feature cells must still carry the
+                // declared row time; otherwise the sampler sees them as timeless.
+                node.timestamp = table
+                    .tcol_name
+                    .as_ref()
+                    .and_then(|c| read_timestamp(&table.df, c, r));
+
                 let val = match val {
                     AnyValue::Boolean(val) => AnyValue::Boolean(val),
                     AnyValue::Int8(val) => AnyValue::Float64(val as f64),

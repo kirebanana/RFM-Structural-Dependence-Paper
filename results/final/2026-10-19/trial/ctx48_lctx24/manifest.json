@@ -1,0 +1,238 @@
+{
+  "status": "complete",
+  "complete": true,
+  "database": "rel-trial",
+  "task": "study-outcome",
+  "context": 48,
+  "local_context": 24,
+  "checkpoint": {
+    "name": "stanford-star/rt-plurel/classification",
+    "weights": {
+      "path": "4a369f065d8f69e1da11ee4326ceb9d32cf78ee69255a438449e971f681b7f83",
+      "bytes": 171169918,
+      "sha256": "4a369f065d8f69e1da11ee4326ceb9d32cf78ee69255a438449e971f681b7f83"
+    },
+    "config": {
+      "path": "8e914c9dff33a928d36fdcdb73a9df2b8a90bf49",
+      "bytes": 333,
+      "sha256": "f93b00b5037b99d748cd1965e1ec710dea0e81773c6712af7e171659e3d2e728"
+    },
+    "local_revision": "2ed96efc8007c57d589a31ceb435eb768491c439",
+    "dtype": "bfloat16",
+    "execution": "eager",
+    "device": "NVIDIA GeForce GTX 1650",
+    "capability": [
+      7,
+      5
+    ],
+    "native_bf16": false,
+    "bf16_with_emulation": true,
+    "free_vram_bytes_before_load": 3454795776,
+    "total_vram_bytes": 4294639616
+  },
+  "arms": {
+    "base": {
+      "seed": null,
+      "relation_ids": null,
+      "predictions": "preds_base.npz",
+      "prediction_sha256": "bcd82542a0fc6dc721e5c9b1ca8d588c2d3d1b4f277a75eb7f93d089dbd0b9b7",
+      "exposure": "validation_exposure_base.npz",
+      "exposure_sha256": "f804bca6c7e3000531d22eb942cd3b4ced906096ae83d983fa21d5b4d45447b0",
+      "auroc": 0.5489492528019926,
+      "totals": {
+        "eligible_edges": 3360,
+        "changed_edges": 0,
+        "singleton_edges": 770,
+        "unrewirable_edges": 0,
+        "unrewirable_strata": 0,
+        "max_changed_edges": 2285
+      },
+      "affected_queries": 0,
+      "known_violations": 0,
+      "unknown": 0,
+      "declared_timeless": 651
+    },
+    "task_entity_s101": {
+      "seed": 101,
+      "relation_ids": [
+        1769063
+      ],
+      "predictions": "preds_task_entity_s101.npz",
+      "prediction_sha256": "b5e0aaa66d59de1061d149b025ab686e5b80c29d13c9a1659ca739f06a7d5c57",
+      "exposure": "validation_exposure_task_entity_s101.npz",
+      "exposure_sha256": "20acbb47404f84e7e8370775deafb0f74ab6d2d325fe910e6934fb1a0315fd13",
+      "auroc": 0.5433686176836862,
+      "totals": {
+        "eligible_edges": 3360,
+        "changed_edges": 1476,
+        "singleton_edges": 770,
+        "unrewirable_edges": 0,
+        "unrewirable_strata": 0,
+        "max_changed_edges": 1476
+      },
+      "affected_queries": 512,
+      "known_violations": 0,
+      "unknown": 0,
+      "declared_timeless": 651
+    },
+    "task_entity_s202": {
+      "seed": 202,
+      "relation_ids": [
+        1769063
+      ],
+      "predictions": "preds_task_entity_s202.npz",
+      "prediction_sha256": "abf7398ace325b3cbc2192854235c6527f2e68e91fc08d9a8e403f36bc915aab",
+      "exposure": "validation_exposure_task_entity_s202.npz",
+      "exposure_sha256": "8bd2295a9a963541d7faf25e800bd566190e45eab3914543bdf36286dea47af9",
+      "auroc": 0.5464430261519302,
+      "totals": {
+        "eligible_edges": 3360,
+        "changed_edges": 1476,
+        "singleton_edges": 770,
+        "unrewirable_edges": 0,
+        "unrewirable_strata": 0,
+        "max_changed_edges": 1476
+      },
+      "affected_queries": 512,
+      "known_violations": 0,
+      "unknown": 0,
+      "declared_timeless": 651
+    },
+    "task_entity_s303": {
+      "seed": 303,
+      "relation_ids": [
+        1769063
+      ],
+      "predictions": "preds_task_entity_s303.npz",
+      "prediction_sha256": "8b086dcf23d3e2b94c6d260542ced186f53f5ccb9c9e321e4abad29c501254a8",
+      "exposure": "validation_exposure_task_entity_s303.npz",
+      "exposure_sha256": "d298073e3f2d302bb658a924dbf0d237546fef1f41256bb3efaa7dd1368e4b1d",
+      "auroc": 0.5282067247820673,
+      "totals": {
+        "eligible_edges": 3360,
+        "changed_edges": 1476,
+        "singleton_edges": 770,
+        "unrewirable_edges": 0,
+        "unrewirable_strata": 0,
+        "max_changed_edges": 1476
+      },
+      "affected_queries": 512,
+      "known_violations": 0,
+      "unknown": 0,
+      "declared_timeless": 651
+    },
+    "database_s101": {
+      "seed": 101,
+      "relation_ids": [
+        2,
+        37884,
+        37885,
+        618540,
+        618541,
+        1636354,
+        1636355,
+        1769067,
+        1769068,
+        1769075,
+        2095213,
+        3161984,
+        3161985,
+        3161989,
+        3162002
+      ],
+      "predictions": "preds_database_s101.npz",
+      "prediction_sha256": "942fc964a10efda4a622e9772db48c9e4194379d091d5a1be8255390c4223e1d",
+      "exposure": "validation_exposure_database_s101.npz",
+      "exposure_sha256": "98791578f277025fedfb6864a0b8da6eb662ccc25f0e63d17b63de58baeecb2a",
+      "auroc": 0.5416095890410959,
+      "totals": {
+        "eligible_edges": 3360,
+        "changed_edges": 809,
+        "singleton_edges": 770,
+        "unrewirable_edges": 0,
+        "unrewirable_strata": 0,
+        "max_changed_edges": 809
+      },
+      "affected_queries": 296,
+      "known_violations": 0,
+      "unknown": 0,
+      "declared_timeless": 651
+    },
+    "database_s202": {
+      "seed": 202,
+      "relation_ids": [
+        2,
+        37884,
+        37885,
+        618540,
+        618541,
+        1636354,
+        1636355,
+        1769067,
+        1769068,
+        1769075,
+        2095213,
+        3161984,
+        3161985,
+        3161989,
+        3162002
+      ],
+      "predictions": "preds_database_s202.npz",
+      "prediction_sha256": "c51dc6b632671bc611c5b2ac4bc3a3c7ef169afae852abbb74877d7c3f7e7cf9",
+      "exposure": "validation_exposure_database_s202.npz",
+      "exposure_sha256": "cb684c9ad8c2b40a664a2336a693a58f6277e12d8dd3690a1aa2dbc7146e58d4",
+      "auroc": 0.5409090909090909,
+      "totals": {
+        "eligible_edges": 3360,
+        "changed_edges": 809,
+        "singleton_edges": 770,
+        "unrewirable_edges": 0,
+        "unrewirable_strata": 0,
+        "max_changed_edges": 809
+      },
+      "affected_queries": 296,
+      "known_violations": 0,
+      "unknown": 0,
+      "declared_timeless": 651
+    },
+    "database_s303": {
+      "seed": 303,
+      "relation_ids": [
+        2,
+        37884,
+        37885,
+        618540,
+        618541,
+        1636354,
+        1636355,
+        1769067,
+        1769068,
+        1769075,
+        2095213,
+        3161984,
+        3161985,
+        3161989,
+        3162002
+      ],
+      "predictions": "preds_database_s303.npz",
+      "prediction_sha256": "c34e94c9814a96f5305522d0c80f6aec660d29e3761e042f82e14b7b1b75215b",
+      "exposure": "validation_exposure_database_s303.npz",
+      "exposure_sha256": "e909ecc8c0d49f5b3f2a1fc84af88b3c80a99ee387ed785dd8c891ea7747169b",
+      "auroc": 0.5416173723536737,
+      "totals": {
+        "eligible_edges": 3360,
+        "changed_edges": 809,
+        "singleton_edges": 770,
+        "unrewirable_edges": 0,
+        "unrewirable_strata": 0,
+        "max_changed_edges": 809
+      },
+      "affected_queries": 296,
+      "known_violations": 0,
+      "unknown": 0,
+      "declared_timeless": 651
+    }
+  },
+  "seconds": 127.2895093039997,
+  "model_forward_attempts": 448
+}

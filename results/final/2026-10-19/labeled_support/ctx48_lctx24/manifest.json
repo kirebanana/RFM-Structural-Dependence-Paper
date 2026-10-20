@@ -1,0 +1,188 @@
+{
+  "status": "complete",
+  "complete": true,
+  "ctx": 48,
+  "checkpoint": {
+    "name": "stanford-star/rt-plurel/classification",
+    "weights": {
+      "path": "4a369f065d8f69e1da11ee4326ceb9d32cf78ee69255a438449e971f681b7f83",
+      "bytes": 171169918,
+      "sha256": "4a369f065d8f69e1da11ee4326ceb9d32cf78ee69255a438449e971f681b7f83"
+    },
+    "config": {
+      "path": "8e914c9dff33a928d36fdcdb73a9df2b8a90bf49",
+      "bytes": 333,
+      "sha256": "f93b00b5037b99d748cd1965e1ec710dea0e81773c6712af7e171659e3d2e728"
+    },
+    "local_revision": "2ed96efc8007c57d589a31ceb435eb768491c439",
+    "dtype": "bfloat16",
+    "execution": "eager",
+    "device": "NVIDIA GeForce GTX 1650",
+    "capability": [
+      7,
+      5
+    ],
+    "native_bf16": false,
+    "bf16_with_emulation": true,
+    "free_vram_bytes_before_load": 3454795776,
+    "total_vram_bytes": 4294639616
+  },
+  "relation_index": {
+    "25": {
+      "child_table": "constructor_standings",
+      "fk_column": "raceId",
+      "parent_table": "races",
+      "parent_table_idx": 3
+    },
+    "2958": {
+      "child_table": "qualifying",
+      "fk_column": "raceId",
+      "parent_table": "races",
+      "parent_table_idx": 3
+    },
+    "4": {
+      "child_table": "results",
+      "fk_column": "driverId",
+      "parent_table": "drivers",
+      "parent_table_idx": 5
+    },
+    "33": {
+      "child_table": "driver-position",
+      "fk_column": "driverId",
+      "parent_table": "drivers",
+      "parent_table_idx": 5
+    },
+    "2300": {
+      "child_table": "standings",
+      "fk_column": "driverId",
+      "parent_table": "drivers",
+      "parent_table_idx": 5
+    },
+    "2307": {
+      "child_table": "constructor_results",
+      "fk_column": "raceId",
+      "parent_table": "races",
+      "parent_table_idx": 3
+    },
+    "21": {
+      "child_table": "driver-top3",
+      "fk_column": "driverId",
+      "parent_table": "drivers",
+      "parent_table_idx": 5
+    },
+    "2299": {
+      "child_table": "standings",
+      "fk_column": "raceId",
+      "parent_table": "races",
+      "parent_table_idx": 3
+    },
+    "6": {
+      "child_table": "results",
+      "fk_column": "constructorId",
+      "parent_table": "constructors",
+      "parent_table_idx": 7
+    },
+    "2686": {
+      "child_table": "driver-dnf",
+      "fk_column": "driverId",
+      "parent_table": "drivers",
+      "parent_table_idx": 5
+    },
+    "2959": {
+      "child_table": "qualifying",
+      "fk_column": "driverId",
+      "parent_table": "drivers",
+      "parent_table_idx": 5
+    },
+    "2308": {
+      "child_table": "constructor_results",
+      "fk_column": "constructorId",
+      "parent_table": "constructors",
+      "parent_table_idx": 7
+    },
+    "2967": {
+      "child_table": "races",
+      "fk_column": "circuitId",
+      "parent_table": "circuits",
+      "parent_table_idx": 2688
+    },
+    "2": {
+      "child_table": "results",
+      "fk_column": "raceId",
+      "parent_table": "races",
+      "parent_table_idx": 3
+    },
+    "2960": {
+      "child_table": "qualifying",
+      "fk_column": "constructorId",
+      "parent_table": "constructors",
+      "parent_table_idx": 7
+    },
+    "26": {
+      "child_table": "constructor_standings",
+      "fk_column": "constructorId",
+      "parent_table": "constructors",
+      "parent_table_idx": 7
+    }
+  },
+  "arms": {
+    "labeled_support_only_s101": {
+      "auroc": 0.5571756209437368,
+      "predictions": "preds_labeled_support_only_s101.npz",
+      "prediction_sha256": "e184a1ff912f1b2de8ca5452e9b1f656e2655b6f388ab7f32ec4558887d34e47",
+      "exposure": "validation_exposure_labeled_support_only_s101.npz",
+      "exposure_sha256": "49d6e8f0fa69f4adc88d1aa9e03070ce20f029308b02dd0a564441452568dec7",
+      "reused_clean_no_changes": false,
+      "totals": {
+        "eligible_edges": 6749,
+        "changed_edges": 451,
+        "singleton_edges": 2108,
+        "unrewirable_edges": 0,
+        "unrewirable_strata": 0,
+        "max_changed_edges": 451
+      },
+      "unchanged_queries": 544
+    },
+    "labeled_support_only_s202": {
+      "auroc": 0.5534377592348606,
+      "predictions": "preds_labeled_support_only_s202.npz",
+      "prediction_sha256": "9f24c33c9ac849fca682340a2f6ce37f415ab38ae67c57f5419661d2448b40b7",
+      "exposure": "validation_exposure_labeled_support_only_s202.npz",
+      "exposure_sha256": "49d6e8f0fa69f4adc88d1aa9e03070ce20f029308b02dd0a564441452568dec7",
+      "reused_clean_no_changes": false,
+      "totals": {
+        "eligible_edges": 6749,
+        "changed_edges": 451,
+        "singleton_edges": 2108,
+        "unrewirable_edges": 0,
+        "unrewirable_strata": 0,
+        "max_changed_edges": 451
+      },
+      "unchanged_queries": 544
+    },
+    "labeled_support_only_s303": {
+      "auroc": 0.5540867613331382,
+      "predictions": "preds_labeled_support_only_s303.npz",
+      "prediction_sha256": "e615aa66cfb767ff22bd367b0b61116373f624413fa9d41e103a74420c0df3b3",
+      "exposure": "validation_exposure_labeled_support_only_s303.npz",
+      "exposure_sha256": "49d6e8f0fa69f4adc88d1aa9e03070ce20f029308b02dd0a564441452568dec7",
+      "reused_clean_no_changes": false,
+      "totals": {
+        "eligible_edges": 6749,
+        "changed_edges": 451,
+        "singleton_edges": 2108,
+        "unrewirable_edges": 0,
+        "unrewirable_strata": 0,
+        "max_changed_edges": 451
+      },
+      "unchanged_queries": 544
+    }
+  },
+  "reference_clean": {
+    "path": "preds_base.npz",
+    "bytes": 14798,
+    "sha256": "8106e63ad3cc30e49de4efb4a3d37b090c7607d687896a483e35ea8fc71e99a4"
+  },
+  "elapsed_sec": 115.97407078742981,
+  "model_forward_attempts": 264
+}

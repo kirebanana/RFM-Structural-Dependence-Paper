@@ -97,17 +97,22 @@ def analyze_matrix(root, *, allow_test_artifacts=False):
     first_clean = None
     first_checkpoint = None
     expected_arms = experiment_arms([101, 202, 303])
+    expected_queries = int(matrix.get("expected_queries", 702))
+    panel_task = None
     for ctx in (48, 128):
         directory = root / f"ctx{ctx}_lctx{ctx // 2}"
         manifest = json.loads((directory / "manifest.json").read_text())
-        if not manifest["complete"] or manifest["status"] != "complete" or manifest["n_queries"] != 702:
+        if not manifest["complete"] or manifest["status"] != "complete" or manifest["n_queries"] != expected_queries:
             raise ValueError("context run is incomplete")
         if manifest["evidence_kind"] != "real" and not allow_test_artifacts:
             raise ValueError("synthetic test artifacts are not research results")
         if manifest["ctx"] != ctx or manifest["local_ctx"] != ctx // 2:
             raise ValueError("context metadata differs from directory")
-        if manifest["db_name"] != "rel-f1" or manifest["task_table"] != "driver-dnf" or manifest["checkpoint"] != "stanford-star/rt-plurel/classification":
+        if manifest["db_name"] != "rel-f1" or manifest["task_table"] not in ("driver-dnf", "driver-top3") or manifest["checkpoint"] != "stanford-star/rt-plurel/classification":
             raise ValueError("task/model differs from the preliminary research setup")
+        if panel_task is not None and panel_task != manifest["task_table"]:
+            raise ValueError("task differs across context runs")
+        panel_task = manifest["task_table"]
         if set(manifest["arms"]) != {name for name, _, _ in expected_arms}:
             raise ValueError("expected exactly seven agreed arms")
         validation = manifest["validation"]
@@ -123,7 +128,7 @@ def analyze_matrix(root, *, allow_test_artifacts=False):
                 raise ValueError("checkpoint differs across contexts")
             first_checkpoint = identity
         base = _read_npz(_artifact_path(directory, manifest["arms"]["base"]["predictions"]))
-        assert_prediction_alignment(first_clean if first_clean is not None else base, base)
+        assert_prediction_alignment(first_clean if first_clean is not None else base, base, count=expected_queries)
         first_clean = base
         base_auc = binary_auroc(base["labels"], base["preds"])
         context_rows = []
@@ -136,12 +141,12 @@ def analyze_matrix(root, *, allow_test_artifacts=False):
             if file_identity(pred_path)["sha256"] != arm["prediction_sha256"] or file_identity(exposure_path)["sha256"] != arm["exposure_sha256"]:
                 raise ValueError("saved artifact checksum differs from completed manifest")
             pred, exposure = _read_npz(pred_path), _read_npz(exposure_path)
-            assert_prediction_alignment(base, pred)
+            assert_prediction_alignment(base, pred, count=expected_queries)
             if not np.array_equal(exposure["target_node_idxs"], pred["node_idxs"]):
                 raise ValueError("exposure/prediction target IDs are misaligned")
             if not np.array_equal(pred["node_idxs"], validation["target_node_idxs"]) or not np.array_equal(pred["labels"], validation["labels"]):
                 raise ValueError("saved predictions differ from validated targets/labels")
-            reconcile_exposure({**exposure, "is_prediction_query": np.ones(702, dtype=bool)}, arm["totals"])
+            reconcile_exposure({**exposure, "is_prediction_query": np.ones(expected_queries, dtype=bool)}, arm["totals"])
             if validation.get("availability_policy"):
                 verify_policy_exposure(exposure, validation, name)
             if alpha == 0 and np.any(exposure["changed_edges"]):
@@ -186,10 +191,11 @@ def analyze_matrix(root, *, allow_test_artifacts=False):
                     summary[key] = sum(total["changed_edges"] for total in totals) / den if den else None
                 else:
                     zero_key = "zero_eligible_queries" if key.endswith("eligible") else "zero_max_queries"
-                    defined = sum(702 - row[zero_key] for row in selected)
-                    summary[key] = sum((row[key] or 0) * (702 - row[zero_key]) for row in selected) / defined if defined else None
+                    defined = sum(expected_queries - row[zero_key] for row in selected)
+                    summary[key] = sum((row[key] or 0) * (expected_queries - row[zero_key]) for row in selected) / defined if defined else None
             summaries.append(summary)
     return {"status": "complete", "result_set": str(root.resolve()),
+             "task": f"rel-f1/{panel_task}", "n_queries": expected_queries,
              "evidence_kind": "synthetic_test" if allow_test_artifacts else "real",
              "availability_policy": matrix.get("availability_policy"),
             "rows": rows, "summaries": summaries,
@@ -209,7 +215,8 @@ def summary_markdown(analysis):
         return "undefined" if value is None else f"{value:.4f}"
 
     lines = ["# Preliminary structural-reliance results", "",
-             f"Result set: `{analysis['result_set']}`", f"Evidence: **{analysis['evidence_kind']}**", "",
+              f"Result set: `{analysis['result_set']}`", f"Evidence: **{analysis['evidence_kind']}**", "",
+              f"Task: `{analysis.get('task', 'rel-f1/driver-dnf')}`", "",
              "## Context-by-strength summary", "",
              "| Context/local | Requested | Seeds | AUROC mean [range] | Δ clean | Global changed/eligible | Global changed/max |",
              "|---|---:|---|---|---:|---:|---:|"]

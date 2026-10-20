@@ -1,0 +1,29 @@
+{
+  "database": "rel-arxiv",
+  "task": "paper-citation",
+  "test_offset": 2733846,
+  "manifest": {
+    "name": "paper-citation",
+    "kind": "forecast",
+    "task_type": "binary_classification",
+    "description": "Predict if a paper gets cited in the next 6 months.",
+    "entity_table": "papers",
+    "entity_col": "Paper_ID",
+    "target_col": "cited",
+    "time_col": "date",
+    "timedelta": "182 days",
+    "sql": "WITH paper_citations AS (\n    SELECT\n        t.timestamp AS date,\n        p.Paper_ID,\n        COUNT(c.References_Paper_ID) AS citation_count\n    FROM timestamps t\n    JOIN papers p\n        ON p.Submission_Date <= t.timestamp\n    LEFT JOIN citations c\n        ON c.References_Paper_ID = p.Paper_ID\n        AND c.Submission_Date > t.timestamp\n        AND c.Submission_Date <= t.timestamp + INTERVAL '{timedelta}'\n    GROUP BY t.timestamp, p.Paper_ID\n)\nSELECT\n    date,\n    Paper_ID,\n    CASE WHEN citation_count > 0 THEN 1 ELSE 0 END AS cited\nFROM paper_citations;",
+    "manifest_version": 1
+  },
+  "official_test_size": 193696,
+  "raw_test": {
+    "path": "test.parquet",
+    "bytes": 1075623,
+    "sha256": "5b4a5b6dc2827ad8b13c692733a9e1b4fb9bc30aad294fd4565dc120749cf7e9"
+  },
+  "raw_manifest": {
+    "path": "manifest.yaml",
+    "bytes": 858,
+    "sha256": "6f96d2f2b8fb6281025077320a75bfac080718ad0ec615f56bbcf045972bb9fe"
+  }
+}

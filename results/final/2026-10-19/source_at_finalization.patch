@@ -1,0 +1,3269 @@
+diff --git a/experiments/run_clean_rewire.py b/experiments/run_clean_rewire.py
+index b0f09dc..2dd4389 100644
+--- a/experiments/run_clean_rewire.py
++++ b/experiments/run_clean_rewire.py
+@@ -1,7 +1,9 @@
+-"""Validate and run the paired RT-PluRel corruption matrix on rel-f1/driver-dnf.
++"""Validate/run paired RT-PluRel incidence corruption on rel-f1 forecast tasks.
+ 
+ No weights are loaded in --dry-run. Full runs validate every context/arm first,
+ then require adequate resources and a local checkpoint: no implicit downloads.
++Driver-DNF is the original panel; --task driver-top3 is a same-database
++replication with its own metadata-defined target split, not a pooled experiment.
+ """
+ 
+ import argparse
+@@ -40,6 +42,7 @@ from rfm_structure.validation import (
+     real_query_batch,
+     rewire_and_validate_batch,
+     validate_batches,
++    visible_support_source_mask,
+     write_exposure_npz,
+ )
+ 
+@@ -151,16 +154,23 @@ class BaseWrap:
+ class RewireWrap(BaseWrap):
+     """Only FK parents change; preserve evaluator phantom prediction shapes."""
+ 
+-    def __init__(self, inner, seed, alpha, holder, inference_batch_size=None):
++    def __init__(self, inner, seed, alpha, holder, inference_batch_size=None, relation_ids=None, cycle_mode=None, source_selection=None):
+         super().__init__(inner, holder, seed, inference_batch_size)
+         self.alpha = alpha
++        self.relation_ids = relation_ids
++        self.cycle_mode = cycle_mode
++        if source_selection not in (None, "visible_labeled_support"):
++            raise ValueError("unknown source selection")
++        self.source_selection = source_selection
+ 
+     def predict(self, batch, eval_ctx_sizes, device, task, bool_as_num):
+         real, _ = real_query_batch({**batch, "batch_mask": self.holder.batch_mask})
+         assert_held_fixed(self.holder.batch, real)
+         if not np.array_equal(self.holder.batch["f2p_nbr_idxs"], real["f2p_nbr_idxs"]):
+             raise ValueError("arm did not receive clean FK parents")
+-        evidence = rewire_and_validate_batch(real, self.seed, self.alpha, getattr(self.holder, "availability_policy", None))
++        evidence = rewire_and_validate_batch(real, self.seed, self.alpha,
++                                            getattr(self.holder, "availability_policy", None), self.relation_ids, self.cycle_mode,
++                                            visible_support_source_mask(real) if self.source_selection else None)
+         attach_availability(evidence["exposure"], getattr(self.holder, "availability_counts", None))
+         self.record(evidence)
+         full = numpy_batch({"nbr": batch["f2p_nbr_idxs"]})["nbr"]
+@@ -174,16 +184,16 @@ class RewireWrap(BaseWrap):
+         return self.predict_checked(model_input, evidence["batch"], eval_ctx_sizes, device, task, bool_as_num)
+ 
+ 
+-def build_tasks(pre_dir):
++def build_tasks(pre_dir, task_table=TASK_TABLE):
+     from rt.tasks import tasks_from_preprocessed
+ 
+-    tasks = [task for task in tasks_from_preprocessed(pre_dir, splits=("test",), dbs=[DB_NAME]) if task.table_name == TASK_TABLE]
++    tasks = [task for task in tasks_from_preprocessed(pre_dir, splits=("test",), dbs=[DB_NAME]) if task.table_name == task_table]
+     if len(tasks) != 1:
+-        raise ValueError("expected exactly one driver-dnf test classification task")
++        raise ValueError(f"expected exactly one {task_table} test classification task")
+     return tasks
+ 
+ 
+-def dry_run(ev, pre_dir, seeds, out_dir, local_ctx, fractions=None, availability_policy=None):
++def dry_run(ev, pre_dir, seeds, out_dir, local_ctx, fractions=None, availability_policy=None, expected_count=ITEMS_PER_TASK):
+     """Persist full coverage/evidence; exits 0 passed, 1 failed, 2 uncertain."""
+     report_path = Path(out_dir) / "validation.json"
+     report = {"status": "in_progress", "complete": False, "inference_ready": False,
+@@ -192,11 +202,11 @@ def dry_run(ev, pre_dir, seeds, out_dir, local_ctx, fractions=None, availability
+         json.dump(report, handle)
+     started = time.time()
+     try:
+-        expected = load_expected_target_ids(pre_dir, ev.tasks[0], ITEMS_PER_TASK)
++        expected = load_expected_target_ids(pre_dir, ev.tasks[0], expected_count)
+         relations = load_relation_index(pre_dir, DB_NAME)
+         loader = configure_complete_evaluation(ev, len(expected))
+         report, exposures = validate_batches(loader, expected, seeds, ev.ctx_sizes[0], fractions, availability_policy)
+-        report.update(db_name=DB_NAME, task_table=TASK_TABLE, pre_dir=str(pre_dir), local_ctx=int(local_ctx),
++        report.update(db_name=DB_NAME, task_table=ev.tasks[0].table_name, pre_dir=str(pre_dir), local_ctx=int(local_ctx),
+                       relation_index=relations, eval_bs=int(ev.eval_bs), scheduled_batches=len(loader.dataset),
+                       evaluator_batch_cap=None, strength_rule=STRENGTH_RULE)
+         if report["complete"]:
+@@ -280,16 +290,16 @@ def load_frozen_model(checkpoint_dir, device):
+ 
+ def run(ev, pre_dir, seeds, out_dir, device, local_ctx, *, fractions=(0.0, 0.5, 1.0),
+          validation_report=None, checkpoint_dir=None, model_factory=None, provenance=None,
+-         inference_batch_size=None):
++         inference_batch_size=None, expected_count=ITEMS_PER_TASK):
+     """Technically gated inference; factory injection is only for lightweight tests."""
+     out_dir = Path(out_dir)
+     if validation_report is None:
+-        rc = dry_run(ev, pre_dir, seeds, out_dir, local_ctx, fractions)
++        rc = dry_run(ev, pre_dir, seeds, out_dir, local_ctx, fractions, expected_count=expected_count)
+         if rc:
+             raise ValueError("inference blocked: validation failed or timestamps remain uncertain")
+         validation_report = json.loads((out_dir / "validation.json").read_text())
+     manifest_path = out_dir / "manifest.json"
+-    manifest = {"status": "in_progress", "complete": False, "db_name": DB_NAME, "task_table": TASK_TABLE,
++    manifest = {"status": "in_progress", "complete": False, "db_name": DB_NAME, "task_table": ev.tasks[0].table_name,
+                 "ctx": int(ev.ctx_sizes[0]), "local_ctx": int(local_ctx), "seeds": list(seeds),
+                 "fractions": list(fractions), "checkpoint": CKPT, "validation": validation_report,
+                 "relation_index": load_relation_index(pre_dir, DB_NAME), "strength_rule": STRENGTH_RULE,
+@@ -315,7 +325,7 @@ def run(ev, pre_dir, seeds, out_dir, device, local_ctx, *, fractions=(0.0, 0.5,
+                 raise ValueError("validation strength/seed differs from inference")
+             if alpha > 0 and checked["totals"]["changed_edges"] == 0:
+                 raise ValueError(f"arm {name}: no realized corruption; inference would be uninformative")
+-        configure_complete_evaluation(ev, ITEMS_PER_TASK)
++        configure_complete_evaluation(ev, expected_count)
+         if model_factory:
+             model = model_factory()
+             manifest["checkpoint_provenance"] = {"test_only": True}
+@@ -334,9 +344,9 @@ def run(ev, pre_dir, seeds, out_dir, device, local_ctx, *, fractions=(0.0, 0.5,
+         if len(outputs) != 1:
+             raise ValueError("expected one task/context output")
+         _, _, labels, preds, _, ids = outputs[0]
+-        expected = load_expected_target_ids(pre_dir, ev.tasks[0], ITEMS_PER_TASK)
+-        if len(ids) != ITEMS_PER_TASK or not np.array_equal(np.sort(ids), expected):
+-            raise ValueError("predictions do not cover exactly the 702 intended targets")
++        expected = load_expected_target_ids(pre_dir, ev.tasks[0], expected_count)
++        if len(ids) != expected_count or not np.array_equal(np.sort(ids), expected):
++            raise ValueError(f"predictions do not cover exactly the {expected_count} intended targets")
+         if not np.array_equal(ids, validation_report["target_node_idxs"]) or not np.array_equal(labels, validation_report["labels"]):
+             raise ValueError("prediction target/label order differs from validated data")
+         if holder.batch_index != len(holder.fingerprints):
+@@ -344,7 +354,7 @@ def run(ev, pre_dir, seeds, out_dir, device, local_ctx, *, fractions=(0.0, 0.5,
+         manifest["arms"] = {}
+         for (name, alpha, seed), (_, wrapper) in zip(arms, wrappers, strict=True):
+             scores = np.asarray(preds[name], dtype=float)
+-            if scores.shape != (ITEMS_PER_TASK,) or not np.all(np.isfinite(scores)):
++            if scores.shape != (expected_count,) or not np.all(np.isfinite(scores)):
+                 raise ValueError(f"arm {name}: invalid raw scores")
+             exposure_path = out_dir / f"exposure_{name}.npz"
+             exposure = write_exposure_npz(exposure_path, wrapper.exposure_batches)
+@@ -381,12 +391,13 @@ def run(ev, pre_dir, seeds, out_dir, device, local_ctx, *, fractions=(0.0, 0.5,
+ 
+ def execute_matrix(evaluators, pre_dir, seeds, fractions, out_dir, *, dry_only=True,
+                     checkpoint_dir=None, device="cuda", model_factory=None, provenance=None,
+-                    inference_batch_size=None, availability_policy=None):
++                    inference_batch_size=None, availability_policy=None, expected_count=ITEMS_PER_TASK):
+     """Validate every context before any weight load or model forward."""
+     root = Path(out_dir)
+     root.mkdir(parents=True, exist_ok=False)
+     status = {"status": "in_progress", "complete": False, "contexts": {}, "inference_ran": False,
+-              "task": f"{DB_NAME}/{TASK_TABLE}", "seeds": list(seeds), "fractions": list(fractions),
++              "task": f"{DB_NAME}/{next(iter(evaluators.values())).tasks[0].table_name}",
++              "expected_queries": expected_count, "seeds": list(seeds), "fractions": list(fractions),
+              "provenance": provenance or {}, "availability_policy": availability_policy,
+              "evidence_kind": "synthetic_test" if model_factory else "validation_only" if dry_only else "real"}
+     save_json(root / "matrix.json", status)
+@@ -395,7 +406,7 @@ def execute_matrix(evaluators, pre_dir, seeds, fractions, out_dir, *, dry_only=T
+         for ctx, ev in evaluators.items():
+             directory = root / f"ctx{ctx}_lctx{ctx // 2}"
+             directory.mkdir()
+-            dry_run(ev, pre_dir, seeds, directory, ctx // 2, fractions, availability_policy)
++            dry_run(ev, pre_dir, seeds, directory, ctx // 2, fractions, availability_policy, expected_count)
+             report = json.loads((directory / "validation.json").read_text())
+             validated[ctx] = report
+             status["contexts"][str(ctx)] = report["status"]
+@@ -415,7 +426,7 @@ def execute_matrix(evaluators, pre_dir, seeds, fractions, out_dir, *, dry_only=T
+             directory = root / f"ctx{ctx}_lctx{ctx // 2}"
+             run(ev, pre_dir, seeds, directory, device, ctx // 2, fractions=fractions,
+                 validation_report=validated[ctx], checkpoint_dir=checkpoint_dir, model_factory=model_factory,
+-                provenance=provenance, inference_batch_size=inference_batch_size)
++                provenance=provenance, inference_batch_size=inference_batch_size, expected_count=expected_count)
+         status.update(status="complete", complete=True)
+         return status
+     except Exception as error:
+@@ -441,6 +452,7 @@ def main():
+     parser.add_argument("--dry-run", action="store_true")
+     parser.add_argument("--pre-dir", required=True)
+     parser.add_argument("--checkpoint-dir")
++    parser.add_argument("--task", choices=("driver-dnf", "driver-top3"), default=TASK_TABLE)
+     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
+     parser.add_argument("--inference-batch-size", type=int, default=8,
+                         help="real queries per model forward; does not change sampled contexts or matching")
+@@ -475,7 +487,9 @@ def main():
+                       "bfs_width": 32, "num_walks": 10000, "walk_length": 20, "prefer_latest": True}}
+         from rt.eval_utils import build_evaluator
+ 
+-        tasks = build_tasks(str(pre_dir))
++        tasks = build_tasks(str(pre_dir), args.task)
++        table_info = json.loads((pre_dir / DB_NAME / "table_info.json").read_text())
++        expected_count = int(table_info[f"{args.task}:Test"]["num_nodes"])
+         availability_policy = load_availability_policy(pre_dir)
+         device = "cpu"
+         if not args.dry_run:
+@@ -484,10 +498,11 @@ def main():
+             device = ("cuda" if torch.cuda.is_available() else "cpu") if args.device == "auto" else args.device
+         evaluators = {ctx: build_evaluator(tasks, str(pre_dir), embedding_model="all-MiniLM-L12-v2", d_text=384,
+                        device=device, ctx_size=ctx, local_ctx_size=ctx // 2,
+-                       items_per_task=ITEMS_PER_TASK, num_workers=0, shuffle_seed=0, context_seed=0) for ctx in contexts}
++                       items_per_task=expected_count, num_workers=0, shuffle_seed=0, context_seed=0) for ctx in contexts}
+         status = execute_matrix(evaluators, pre_dir, seeds, fractions, root, dry_only=args.dry_run,
+                                 checkpoint_dir=args.checkpoint_dir, provenance=provenance, device=device,
+-                                inference_batch_size=args.inference_batch_size, availability_policy=availability_policy)
++                                inference_batch_size=args.inference_batch_size, availability_policy=availability_policy,
++                                expected_count=expected_count)
+         print(f"[{status['status']}] {root}")
+         return 0 if status["complete"] else 2 if status["status"] == "temporal_uncertainty" else 1
+     except Exception as error:  # noqa: BLE001 -- persist setup errors without loading weights
+diff --git a/src/rfm_structure/analysis.py b/src/rfm_structure/analysis.py
+index 39735ba..4c908de 100644
+--- a/src/rfm_structure/analysis.py
++++ b/src/rfm_structure/analysis.py
+@@ -97,17 +97,22 @@ def analyze_matrix(root, *, allow_test_artifacts=False):
+     first_clean = None
+     first_checkpoint = None
+     expected_arms = experiment_arms([101, 202, 303])
++    expected_queries = int(matrix.get("expected_queries", 702))
++    panel_task = None
+     for ctx in (48, 128):
+         directory = root / f"ctx{ctx}_lctx{ctx // 2}"
+         manifest = json.loads((directory / "manifest.json").read_text())
+-        if not manifest["complete"] or manifest["status"] != "complete" or manifest["n_queries"] != 702:
++        if not manifest["complete"] or manifest["status"] != "complete" or manifest["n_queries"] != expected_queries:
+             raise ValueError("context run is incomplete")
+         if manifest["evidence_kind"] != "real" and not allow_test_artifacts:
+             raise ValueError("synthetic test artifacts are not research results")
+         if manifest["ctx"] != ctx or manifest["local_ctx"] != ctx // 2:
+             raise ValueError("context metadata differs from directory")
+-        if manifest["db_name"] != "rel-f1" or manifest["task_table"] != "driver-dnf" or manifest["checkpoint"] != "stanford-star/rt-plurel/classification":
++        if manifest["db_name"] != "rel-f1" or manifest["task_table"] not in ("driver-dnf", "driver-top3") or manifest["checkpoint"] != "stanford-star/rt-plurel/classification":
+             raise ValueError("task/model differs from the preliminary research setup")
++        if panel_task is not None and panel_task != manifest["task_table"]:
++            raise ValueError("task differs across context runs")
++        panel_task = manifest["task_table"]
+         if set(manifest["arms"]) != {name for name, _, _ in expected_arms}:
+             raise ValueError("expected exactly seven agreed arms")
+         validation = manifest["validation"]
+@@ -123,7 +128,7 @@ def analyze_matrix(root, *, allow_test_artifacts=False):
+                 raise ValueError("checkpoint differs across contexts")
+             first_checkpoint = identity
+         base = _read_npz(_artifact_path(directory, manifest["arms"]["base"]["predictions"]))
+-        assert_prediction_alignment(first_clean if first_clean is not None else base, base)
++        assert_prediction_alignment(first_clean if first_clean is not None else base, base, count=expected_queries)
+         first_clean = base
+         base_auc = binary_auroc(base["labels"], base["preds"])
+         context_rows = []
+@@ -136,12 +141,12 @@ def analyze_matrix(root, *, allow_test_artifacts=False):
+             if file_identity(pred_path)["sha256"] != arm["prediction_sha256"] or file_identity(exposure_path)["sha256"] != arm["exposure_sha256"]:
+                 raise ValueError("saved artifact checksum differs from completed manifest")
+             pred, exposure = _read_npz(pred_path), _read_npz(exposure_path)
+-            assert_prediction_alignment(base, pred)
++            assert_prediction_alignment(base, pred, count=expected_queries)
+             if not np.array_equal(exposure["target_node_idxs"], pred["node_idxs"]):
+                 raise ValueError("exposure/prediction target IDs are misaligned")
+             if not np.array_equal(pred["node_idxs"], validation["target_node_idxs"]) or not np.array_equal(pred["labels"], validation["labels"]):
+                 raise ValueError("saved predictions differ from validated targets/labels")
+-            reconcile_exposure({**exposure, "is_prediction_query": np.ones(702, dtype=bool)}, arm["totals"])
++            reconcile_exposure({**exposure, "is_prediction_query": np.ones(expected_queries, dtype=bool)}, arm["totals"])
+             if validation.get("availability_policy"):
+                 verify_policy_exposure(exposure, validation, name)
+             if alpha == 0 and np.any(exposure["changed_edges"]):
+@@ -186,10 +191,11 @@ def analyze_matrix(root, *, allow_test_artifacts=False):
+                     summary[key] = sum(total["changed_edges"] for total in totals) / den if den else None
+                 else:
+                     zero_key = "zero_eligible_queries" if key.endswith("eligible") else "zero_max_queries"
+-                    defined = sum(702 - row[zero_key] for row in selected)
+-                    summary[key] = sum((row[key] or 0) * (702 - row[zero_key]) for row in selected) / defined if defined else None
++                    defined = sum(expected_queries - row[zero_key] for row in selected)
++                    summary[key] = sum((row[key] or 0) * (expected_queries - row[zero_key]) for row in selected) / defined if defined else None
+             summaries.append(summary)
+     return {"status": "complete", "result_set": str(root.resolve()),
++             "task": f"rel-f1/{panel_task}", "n_queries": expected_queries,
+              "evidence_kind": "synthetic_test" if allow_test_artifacts else "real",
+              "availability_policy": matrix.get("availability_policy"),
+             "rows": rows, "summaries": summaries,
+@@ -209,7 +215,8 @@ def summary_markdown(analysis):
+         return "undefined" if value is None else f"{value:.4f}"
+ 
+     lines = ["# Preliminary structural-reliance results", "",
+-             f"Result set: `{analysis['result_set']}`", f"Evidence: **{analysis['evidence_kind']}**", "",
++              f"Result set: `{analysis['result_set']}`", f"Evidence: **{analysis['evidence_kind']}**", "",
++              f"Task: `{analysis.get('task', 'rel-f1/driver-dnf')}`", "",
+              "## Context-by-strength summary", "",
+              "| Context/local | Requested | Seeds | AUROC mean [range] | Δ clean | Global changed/eligible | Global changed/max |",
+              "|---|---:|---|---|---:|---:|---:|"]
+diff --git a/src/rfm_structure/rewiring.py b/src/rfm_structure/rewiring.py
+index c81bcde..2ec123d 100644
+--- a/src/rfm_structure/rewiring.py
++++ b/src/rfm_structure/rewiring.py
+@@ -40,6 +40,21 @@ def _cells_by_source(node_idxs_b, pad_b, s_max):
+     return out
+ 
+ 
++def _assignment_cycles(assignment):
++    """Yield disjoint permutation cycles in the original shuffled-index order."""
++    visited = set()
++    for start in range(len(assignment)):
++        if start in visited:
++            continue
++        cycle = []
++        index = start
++        while index not in visited:
++            visited.add(index)
++            cycle.append(index)
++            index = int(assignment[index])
++        yield cycle
++
++
+ def rewire_f2p_nbr(
+     nbr,
+     rel,
+@@ -50,6 +65,10 @@ def rewire_f2p_nbr(
+     registry=None,
+     sequence_stats=None,
+     alpha=1.0,
++    relation_ids=None,
++    cycle_mode=None,
++    query_node_ids=None,
++    source_mask=None,
+ ):
+     """Reassign eligible FK parent IDs without changing the input array.
+ 
+@@ -74,11 +93,34 @@ def rewire_f2p_nbr(
+     matching. Intermediate strengths select whole cycles in shuffled-index
+     order, accepting only strict improvements toward Python's round-to-even
+     target. Cycle selection consumes no RNG, preserving the legacy 1.0 stream.
++    ``relation_ids`` optionally restricts applied assignments. All strata still
++    consume their original matching RNG, so a targeted relation gets exactly
++    its assignment from the corresponding all-relations intervention. Exposure
++    retains all eligible edges, but maximum changes count only selected relations.
++    Optional touching_query/excluding_query modes select whole matching cycles
++    by whether they contain the query source row; they never cut a cycle into
++    individual FK edges. Query-touching cycles can also change other task rows.
++    ``source_mask`` instead defines a fresh matching pool containing only selected
++    source rows. Each row's retained cells must agree on selection. Its parents
++    are permuted only among that pool; excluded sources remain exactly fixed.
+     """
+     if not np.isfinite(alpha) or not 0 <= alpha <= 1:
+         raise ValueError("alpha must be a finite fraction between 0 and 1")
++    if relation_ids is not None:
++        relation_ids = frozenset(relation_ids)
++        if any(not isinstance(r, (int, np.integer)) or r < 0 for r in relation_ids):
++            raise ValueError("relation IDs must be nonnegative integers")
+     nbr = nbr.copy()
+     B, S, F = nbr.shape
++    if source_mask is not None:
++        if np.shape(source_mask) != (B, S) or np.asarray(source_mask).dtype != np.bool_:
++            raise ValueError("source mask must be a boolean B-by-S array")
++        if cycle_mode is not None:
++            raise ValueError("source-pool selection and full-matching cycle controls are distinct interventions")
++    if cycle_mode not in (None, "touching_query", "excluding_query"):
++        raise ValueError("unknown query-cycle mode")
++    if cycle_mode is not None and (query_node_ids is None or np.shape(query_node_ids) != (B,)):
++        raise ValueError("query-cycle controls require one query node ID per context")
+     if stats is None:
+         stats = {}
+     rng = np.random.default_rng(np.random.PCG64(seed))
+@@ -111,6 +153,10 @@ def rewire_f2p_nbr(
+                 sequence_stats.append(seq_stats)
+             continue
+         cells_by_u = _cells_by_source(node_idxs[b], pad, S)
++        if source_mask is not None:
++            for source, cells in cells_by_u.items():
++                if not np.all(source_mask[b, cells] == source_mask[b, cells[0]]):
++                    raise ValueError(f"source mask disagrees across cells of row {source}")
+         parent_nodes = set()
+ 
+         # One source row can occupy several cells; all copies must agree on FK slots.
+@@ -175,6 +221,13 @@ def rewire_f2p_nbr(
+                 seq_stats["singleton_edges"] += 1
+                 relation_stats["singleton_edges"] += 1
+                 continue
++            if source_mask is not None:
++                # Eligibility accounting still describes the whole sampled
++                # stratum. Only the selected sources enter the new permutation.
++                edges = [edge for edge in edges if source_mask[b, cells_by_u[edge[0]][0]]]
++                M = len(edges)
++                if M < 2:
++                    continue
+             p_arr = np.array([e[2] for e in edges], dtype=np.int64)
+             u_arr = np.array([e[0] for e in edges], dtype=np.int64)
+ 
+@@ -203,25 +256,28 @@ def rewire_f2p_nbr(
+                 relation_stats["unrewirable_edges"] += M
+                 continue
+ 
++            targeted = relation_ids is None or r in relation_ids
++            if not targeted:
++                col_ind = np.arange(M)
++            elif cycle_mode is not None:
++                restricted = np.arange(M)
++                for cycle in _assignment_cycles(col_ind):
++                    touches = bool(np.any(u_arr[cycle] == query_node_ids[b]))
++                    if touches == (cycle_mode == "touching_query"):
++                        restricted[cycle] = col_ind[cycle]
++                col_ind = restricted
+             full_changed = int(np.sum(p_arr[col_ind] != p_arr))
+             total_max_changed += full_changed
+             seq_stats["max_changed_edges"] += full_changed
+             relation_stats["max_changed_edges"] += full_changed
+             selected = col_ind
+-            if alpha < 1:
++            if not targeted:
++                selected = np.arange(M)
++            elif alpha < 1:
+                 selected = np.arange(M)
+-                visited = set()
+                 changed = 0
+                 target = round(alpha * full_changed)
+-                for start in range(M):
+-                    if start in visited:
+-                        continue
+-                    cycle = []
+-                    i = start
+-                    while i not in visited:
+-                        visited.add(i)
+-                        cycle.append(i)
+-                        i = int(col_ind[i])
++                for cycle in _assignment_cycles(col_ind):
+                     weight = int(np.sum(p_arr[col_ind[cycle]] != p_arr[cycle]))
+                     if weight and abs(changed + weight - target) < abs(changed - target):
+                         selected[cycle] = col_ind[cycle]
+diff --git a/src/rfm_structure/validation.py b/src/rfm_structure/validation.py
+index a24e62b..bb46304 100644
+--- a/src/rfm_structure/validation.py
++++ b/src/rfm_structure/validation.py
+@@ -347,7 +347,29 @@ def capture_evaluator_masks(ev, holder):
+         ev.eval_loader_iters[task] = iter(captured)
+ 
+ 
+-def rewire_and_validate_batch(base, seed, alpha=1.0, availability_policy=None):
++def visible_support_source_mask(base):
++    """Select non-query rows with an actually visible target-label cell.
++
++    Visibility is measured after the common availability mask: the label cell
++    must be retained, unmasked as a prediction target, and in the query's target
++    column. Select all cells of each such source row, not just its label cell.
++    """
++    nodes = base["node_idxs"]
++    targets = base["is_targets"] & ~base["is_padding"]
++    if not np.all(targets.sum(axis=1) == 1):
++        raise ValueError("visible support selection requires one query target")
++    result = np.zeros_like(base["is_padding"])
++    for b in range(len(nodes)):
++        target_s = int(np.flatnonzero(targets[b])[0])
++        query = nodes[b, target_s]
++        label = (~base["is_padding"][b] & ~base["is_targets"][b] & base["is_task_nodes"][b]
++                 & (base["col_name_idxs"][b] == base["col_name_idxs"][b, target_s])
++                 & (nodes[b] != query) & np.isfinite(base["number_values"][b].squeeze(-1)))
++        result[b] = np.isin(nodes[b], nodes[b, label])
++    return result
++
++
++def rewire_and_validate_batch(base, seed, alpha=1.0, availability_policy=None, relation_ids=None, cycle_mode=None, source_mask=None):
+     """Apply maximum rewiring and inspect a real-row batch at one shared seam.
+ 
+     Return structural/temporal errors alongside exposure rather than losing
+@@ -361,11 +383,23 @@ def rewire_and_validate_batch(base, seed, alpha=1.0, availability_policy=None):
+     arm["f2p_nbr_idxs"] = rewire_f2p_nbr(
+         base["f2p_nbr_idxs"], base["f2p_rel_idxs"], base["node_idxs"],
+         base["is_padding"], seed, stats=totals, sequence_stats=sequence_stats, alpha=alpha,
++        relation_ids=relation_ids,
++        cycle_mode=cycle_mode,
++        query_node_ids=(base["node_idxs"] * base["is_targets"]).sum(axis=1, dtype=np.int64),
++        source_mask=source_mask,
+     )
+     assert_held_fixed(cap, base)
+     if not np.array_equal(cap["f2p_nbr_idxs"], base["f2p_nbr_idxs"]):
+         raise ValueError("rewiring mutated the clean parent input")
+     assert_held_fixed(cap, arm)
++    if relation_ids is not None:
++        outside = ~np.isin(base["f2p_rel_idxs"], list(relation_ids))
++        if not np.array_equal(cap["f2p_nbr_idxs"][outside], arm["f2p_nbr_idxs"][outside]):
++            raise ValueError("non-targeted FK relation changed")
++    if source_mask is not None:
++        outside = np.broadcast_to(~source_mask[..., None], cap["f2p_nbr_idxs"].shape)
++        if not np.array_equal(cap["f2p_nbr_idxs"][outside], arm["f2p_nbr_idxs"][outside]):
++            raise ValueError("non-selected source-row FK changed")
+     temporal = {}
+     for name, batch in (("base", cap), ("rewired", arm)):
+         temporal[name] = summarize_temporal_status(
+diff --git a/tests/test_runner.py b/tests/test_runner.py
+index 8e10b1a..a48a610 100644
+--- a/tests/test_runner.py
++++ b/tests/test_runner.py
+@@ -341,3 +341,32 @@ def test_availability_filtered_matrix_replays_identical_exposure_in_microbatches
+             assert exposure["availability_removed_future_tokens"].sum() == 1
+             assert exposure["availability_removed_unmatured_label_tokens"].sum() == 702
+             assert exposure["context_token_counts"][0] == 10
++
++
++def test_replication_task_uses_its_own_complete_split_and_metadata(runner, tmp_path):
++    from rfm_structure.analysis import analyze_matrix
++
++    write_metadata(tmp_path)
++    (tmp_path / "rel-f1/table_info.json").write_text(json.dumps({
++        "driver-top3:Test": {"num_nodes": 3, "node_idx_offset": 0},
++    }))
++    evaluators = {48: evaluator(48), 128: evaluator(128)}
++    for ev in evaluators.values():
++        original = ev.tasks[0]
++        task = original._replace(table_name="driver-top3")
++        loader = ev.eval_loaders[original]
++        loader.batches = [{key: value[:3].copy() for key, value in batch.items()} for batch in loader.batches]
++        loader.dataset.rustler_dataset.num_items = 3
++        ev.tasks = [task]
++        ev.eval_loaders = {task: loader}
++        ev.eval_loader_iters = {task: iter(loader)}
++    root = tmp_path / "replication"
++    result = runner["execute_matrix"](
++        evaluators, tmp_path, [101, 202, 303], [0, 0.5, 1], root,
++        dry_only=False, model_factory=FakeModel, inference_batch_size=2, expected_count=3,
++    )
++    assert result["task"] == "rel-f1/driver-top3"
++    analysis = analyze_matrix(root, allow_test_artifacts=True)
++    assert analysis["task"] == "rel-f1/driver-top3"
++    assert analysis["n_queries"] == 3
++    assert len(analysis["rows"]) == 14
+diff --git a/vendor/relational-transformer/rustler/src/pre.rs b/vendor/relational-transformer/rustler/src/pre.rs
+index 703ca2c..ab7c0df 100644
+--- a/vendor/relational-transformer/rustler/src/pre.rs
++++ b/vendor/relational-transformer/rustler/src/pre.rs
+@@ -613,6 +613,14 @@ pub fn main(cli: Cli) {
+                 node.node_idx = node_idx;
+                 node.table_name_idx = table_name_idx;
+ 
++                // Temporal entity tables can have no outgoing FK columns
++                // (e.g. rel-trial studies). Feature cells must still carry the
++                // declared row time; otherwise the sampler sees them as timeless.
++                node.timestamp = table
++                    .tcol_name
++                    .as_ref()
++                    .and_then(|c| read_timestamp(&table.df, c, r));
++
+                 let val = match val {
+                     AnyValue::Boolean(val) => AnyValue::Boolean(val),
+                     AnyValue::Int8(val) => AnyValue::Float64(val as f64),
+diff --git a/experiments/analyze_database_replications.py b/experiments/analyze_database_replications.py
+new file mode 100644
+--- /dev/null
++++ b/experiments/analyze_database_replications.py
+@@ -0,0 +1,154 @@
++"""Analyze frozen cross-database controls; no exploratory predictor fitting."""
++import argparse
++import json
++from pathlib import Path
++
++import numpy as np
++import yaml
++
++from rfm_structure.analysis import assert_prediction_alignment, paired_statistics
++from rfm_structure.exploratory import clustered_auc_delta
++from rfm_structure.metrics import binary_auroc
++from rfm_structure.provenance import file_identity
++from rfm_structure.validation import reconcile_exposure
++
++
++def read_npz(path):
++    with np.load(path, allow_pickle=False) as saved:
++        return {key: saved[key].copy() for key in saved.files}
++
++
++def paired_mean_interval(differences, entities, replicates=2000):
++    """Entity-cluster resampling, conditional on the observed query dates/seeds."""
++    unique, codes = np.unique(entities, return_inverse=True)
++    draws = np.random.default_rng(20261007).multinomial(len(unique), np.ones(len(unique)) / len(unique), size=replicates)
++    weights = draws[:, codes]
++    estimates = (weights @ differences) / weights.sum(axis=1)
++    return {"point": float(np.mean(differences)), "entity_percentile_95": np.quantile(estimates, [.025, .975]).tolist(),
++            "replicates": replicates, "scope": "conditional on test date and three matching seeds"}
++
++
++def entity_auc_uncertainty(labels, reference, scores, dates, entities):
++    """Use entity terminology for panels whose entities are not F1 drivers."""
++    return {key.replace("driver", "entity"): value
++            for key, value in clustered_auc_delta(labels, reference, scores, dates, entities).items()}
++
++
++def analyze_run(root):
++    state = json.loads((root / "replication.json").read_text())
++    if not state["complete"] or state["status"] != "complete":
++        raise ValueError("replication did not complete")
++    database, task = state["database"], state["task"]
++    if (root / "panel.npz").exists():
++        panel = read_npz(root / "panel.npz")
++        if not np.array_equal(panel["node_idxs"], state["query_ids"]):
++            raise ValueError("panel metadata differs from prediction order")
++        labels, dates, entities = panel["labels"], panel["dates"], panel["entities"]
++    else:
++        import pandas as pd
++
++        source = Path(state["provenance"]["preprocessing"]["meta.json"]["path"]).parent
++        raw = Path(json.loads((source / "meta.json").read_text())["source"])
++        task_spec = yaml.safe_load((raw / "tasks" / task / "manifest.yaml").read_text())
++        offset = next(info["start"] for info in state["availability_policy"]["tables"] if info["table"] == f"{task}:Test")
++        rows = pd.read_parquet(raw / "tasks" / task / "test.parquet").iloc[np.asarray(state["query_ids"]) - offset]
++        labels = rows[task_spec["target_col"]].to_numpy().astype(int)
++        dates = rows[task_spec["time_col"]].astype(str).to_numpy()
++        entities = rows[task_spec["entity_col"]].to_numpy()
++    output = {"database": database, "task": task, "protocol": state["protocol"], "panel": state["panel"],
++              "official_test_size": state["official_test_size"], "queries": state["n_queries"], "run": str(root),
++              "contexts": {}, "interpretation": "fixed small replication; no full-test or temporal-generalization claim"}
++    checkpoint = None
++    sensitivities = {}
++    reference_clean = None
++    for ctx in (48, 128):
++        directory = root / f"ctx{ctx}_lctx{ctx // 2}"
++        manifest = json.loads((directory / "manifest.json").read_text())
++        validation = json.loads((directory / "validation.json").read_text())
++        if manifest["status"] != "complete" or not manifest["complete"] or validation["status"] != "passed":
++            raise ValueError("context did not pass validation and complete inference")
++        identity = (manifest["checkpoint"]["weights"]["sha256"], manifest["checkpoint"]["config"]["sha256"])
++        if checkpoint is not None and identity != checkpoint:
++            raise ValueError("checkpoint differs across contexts")
++        checkpoint = identity
++        loaded = {}
++        exposure = {}
++        for name, arm in manifest["arms"].items():
++            pred_path, exposure_path = directory / arm["predictions"], directory / arm["exposure"]
++            if file_identity(pred_path)["sha256"] != arm["prediction_sha256"] or file_identity(exposure_path)["sha256"] != arm["exposure_sha256"]:
++                raise ValueError("artifact checksum mismatch")
++            loaded[name], exposure[name] = read_npz(pred_path), read_npz(exposure_path)
++            assert_prediction_alignment(loaded[name], loaded[name], count=len(labels))
++            if not np.array_equal(loaded[name]["node_idxs"], state["query_ids"]) or not np.array_equal(loaded[name]["labels"], validation["labels"]):
++                raise ValueError("prediction query/label order differs from validation")
++            if not np.array_equal(loaded[name]["labels"] > 0, labels.astype(bool)):
++                raise ValueError("stored normalized labels differ from raw task labels")
++            reconcile_exposure({**exposure[name], "is_prediction_query": np.ones(len(labels), dtype=bool)}, arm["totals"])
++            if not np.array_equal(exposure[name]["target_node_idxs"], state["query_ids"]):
++                raise ValueError("exposure/prediction target order differs")
++            if any(exposure[name][f"{prefix}temporal_{key}"].sum() for prefix in ("", "base_") for key in ("unknown", "known_violations")):
++                raise ValueError("unresolved temporal status")
++            if not np.isclose(binary_auroc(labels, loaded[name]["preds"]), arm["auroc"], atol=1e-12):
++                raise ValueError("AUROC differs from manifest")
++        clean = loaded["base"]
++        assert_prediction_alignment(reference_clean if reference_clean is not None else clean, clean, count=len(labels))
++        reference_clean = clean
++        context = {"clean_auc": binary_auroc(labels, clean["preds"]), "groups": {},
++                   "availability": validation["availability_totals"]}
++        output["contexts"][str(ctx)] = context
++        for group in ("task_entity", "database"):
++            scores = np.array([loaded[f"{group}_s{seed}"]["preds"] for seed in (101, 202, 303)])
++            es = [exposure[f"{group}_s{seed}"] for seed in (101, 202, 303)]
++            for seed in (101, 202, 303):
++                assert_prediction_alignment(clean, loaded[f"{group}_s{seed}"], count=len(labels))
++            shift = np.abs(scores - clean["preds"])
++            sensitivities[(ctx, group)] = shift.mean(axis=0)
++            aucs = [binary_auroc(labels, score) for score in scores]
++            context["groups"][group] = {
++                "auroc_mean": float(np.mean(aucs)), "auroc_range": [min(aucs), max(aucs)],
++                "delta_clean": float(np.mean(aucs) - context["clean_auc"]), "aurocs_by_seed": aucs,
++                "mean_abs_shift": float(shift.mean()), "pooled_median_abs_shift": float(np.median(shift)),
++                "paired_by_seed": [paired_statistics(clean["preds"], score) for score in scores],
++                "changed_edges_per_seed": [int(e["changed_edges"].sum()) for e in es],
++                "affected_queries_per_seed": [int((e["changed_edges"] > 0).sum()) for e in es],
++                "auroc_uncertainty": entity_auc_uncertainty(labels, clean["preds"], scores, dates, entities),
++            }
++        task_scores = np.array([loaded[f"task_entity_s{s}"]["preds"] for s in (101, 202, 303)])
++        db_scores = np.array([loaded[f"database_s{s}"]["preds"] for s in (101, 202, 303)])
++        context["task_minus_database_abs_sensitivity"] = paired_mean_interval(
++            sensitivities[(ctx, "task_entity")] - sensitivities[(ctx, "database")], entities
++        )
++        context["task_minus_database_auroc"] = entity_auc_uncertainty(labels, db_scores, task_scores, dates, entities)
++    output["context_sensitivity_change"] = {
++        group: paired_mean_interval(sensitivities[(128, group)] - sensitivities[(48, group)], entities)
++        for group in ("task_entity", "database")
++    }
++    return output
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("runs", nargs="+", type=Path)
++    parser.add_argument("--output", type=Path, required=True)
++    args = parser.parse_args()
++    analyses = [analyze_run(root) for root in args.runs]
++    args.output.mkdir(exist_ok=False)
++    (args.output / "analysis.json").write_text(json.dumps(analyses, indent=2, allow_nan=False) + "\n")
++    lines = ["# Frozen cross-database replication", "", "Detailed paired contrasts: [analysis.json](analysis.json).", "",
++              "512 uniformly selected official test queries per task; three matching seeds.",
++             "Single-date panels: intervals are conditional entity-resampling sensitivity checks, not temporal replication.", "",
++             "| Database/task | Context | Clean AUROC | Task-link AUROC mean | DB-link AUROC mean | Task abs shift | DB abs shift |",
++             "|---|---:|---:|---:|---:|---:|---:|"]
++    for result in analyses:
++        for ctx, values in result["contexts"].items():
++            task, db = values["groups"]["task_entity"], values["groups"]["database"]
++            lines.append(f"| {result['database']}/{result['task']} | {ctx} | {values['clean_auc']:.4f} | "
++                         f"{task['auroc_mean']:.4f} | {db['auroc_mean']:.4f} | {task['mean_abs_shift']:.4f} | {db['mean_abs_shift']:.4f} |")
++    lines += ["", "Task/entity and DB groups use different changed-edge counts, not matched dose.",
++              "Declared static covariates and post-sampling availability filtering retain the existing interpretation limits."]
++    (args.output / "SUMMARY.md").write_text("\n".join(lines) + "\n")
++    print(args.output / "SUMMARY.md")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/experiments/analyze_final_results.py b/experiments/analyze_final_results.py
+new file mode 100644
+--- /dev/null
++++ b/experiments/analyze_final_results.py
+@@ -0,0 +1,192 @@
++"""Verify the portable evidence release and independently recalculate its metrics."""
++import argparse
++import hashlib
++import json
++from pathlib import Path
++
++import numpy as np
++from sklearn.metrics import roc_auc_score
++
++from rfm_structure.analysis import assert_prediction_alignment, verify_policy_exposure
++from rfm_structure.exploratory import clustered_auc_delta
++from rfm_structure.metrics import binary_auroc
++from rfm_structure.validation import reconcile_exposure
++
++
++def read_json(path):
++    return json.loads(path.read_text())
++
++
++def read_npz(path):
++    with np.load(path, allow_pickle=False) as saved:
++        return {key: saved[key].copy() for key in saved.files}
++
++
++def check(condition, message):
++    if not condition:
++        raise ValueError(message)
++
++
++def verify_checksums(root):
++    inventory = read_json(root / "checksums.json")
++    for name, identity in inventory.items():
++        path = root / name
++        check(path.is_file(), f"missing artifact: {path}")
++        content = path.read_bytes()
++        check(len(content) == identity["bytes"] and hashlib.sha256(content).hexdigest() == identity["sha256"],
++              f"checksum mismatch: {path}")
++    actual = {str(path.relative_to(root)) for path in root.rglob("*") if path.is_file() and path.name != "checksums.json"}
++    check(actual == set(inventory), "release contains unlisted artifacts")
++
++
++def verify_support_audit(root):
++    audit = read_json(root / "support_link_audit.json")
++    arrays = read_npz(root / audit["per_query_arrays"]["path"])
++    for ctx, groups in audit["contexts"].items():
++        for group, seeds in groups.items():
++            context = root / group / f"ctx{ctx}_lctx{int(ctx) // 2}"
++            manifest = read_json(context / "manifest.json")
++            for seed, totals in seeds.items():
++                prefix = f"ctx{ctx}_{group}_s{seed}_"
++                arm_name = f"{'task_other_cycles' if group == 'task_cycles' else 'labeled_support_only'}_s{seed}"
++                exposure = read_npz(context / manifest["arms"][arm_name]["exposure"])
++                check(np.array_equal(arrays[prefix + "target_node"], exposure["target_node_idxs"]), "audit target order differs")
++                changed = sum(arrays[prefix + "changed_" + kind] for kind in ("query", "visible_label", "hidden_label"))
++                check(np.array_equal(changed, exposure["changed_edges"]), "audit exposure differs")
++                for field in ("eligible", "changed"):
++                    for kind in ("query", "visible_label", "hidden_label"):
++                        check(int(arrays[prefix + field + "_" + kind].sum()) == totals[field][kind], "audit totals differ")
++                check(totals["changed"]["query"] == 0, "audit query links changed")
++                if group == "labeled_support":
++                    check(totals["changed"]["hidden_label"] == 0, "audit hidden-label links changed")
++
++
++def analyze(root, *, bootstrap_replicates=2000):
++    root = Path(root)
++    if (root / "checksums.json").exists():
++        verify_checksums(root)
++    verify_support_audit(root)
++    catalog = read_json(root / "catalog.json")
++    primary = (root / catalog["primary"]).resolve()
++    verify_checksums(primary)
++    runs = {"primary": {"path": primary, "state_file": "matrix.json", "database": "rel-f1", "task": "driver-dnf"}}
++    runs.update({name: {**info, "path": root / name} for name, info in catalog["runs"].items()})
++    rows, groups, checkpoints, support = [], [], set(), {}
++    for name, info in runs.items():
++        directory = info["path"]
++        state = read_json(directory / info["state_file"])
++        check(state["status"] == "complete" and state["complete"], "incomplete run")
++        metadata_dir = root / "relations" if name == "primary" else directory
++        panel = read_npz(metadata_dir / "panel.npz")
++        n = len(panel["labels"])
++        check(len(np.unique(panel["node_idxs"])) == n, "duplicate panel IDs")
++        for ctx in (48, 128):
++            context = f"ctx{ctx}_lctx{ctx // 2}"
++            path = directory / context
++            manifest = read_json(path / "manifest.json")
++            validation = manifest.get("validation") or read_json(path / "validation.json")
++            check(manifest["status"] == "complete" and manifest["complete"] and validation["status"] == "passed"
++                  and validation["complete"], "incomplete or unvalidated context")
++            checkpoint = manifest.get("checkpoint_provenance", manifest["checkpoint"])
++            checkpoints.add(tuple(checkpoint[key]["sha256"] for key in ("weights", "config")))
++            clean_path = path if "base" in manifest["arms"] else primary / context
++            clean = read_npz(clean_path / "preds_base.npz")
++            check(np.array_equal(clean["node_idxs"], panel["node_idxs"])
++                  and np.array_equal(clean["labels"] > 0, panel["labels"]), "metadata/prediction alignment differs")
++            if clean_path != path:
++                reference = read_json(clean_path / "manifest.json")
++                check(validation["batch_fingerprints"] == reference["validation"]["batch_fingerprints"],
++                      "control sampled contexts differ from primary")
++            loaded, scores_by_group, group_rows = {}, {}, {}
++            for arm_name, arm in manifest["arms"].items():
++                for field, sha in (("predictions", "prediction_sha256"), ("exposure", "exposure_sha256")):
++                    check(hashlib.sha256((path / arm[field]).read_bytes()).hexdigest() == arm[sha], "arm hash differs")
++                prediction, exposure = read_npz(path / arm["predictions"]), read_npz(path / arm["exposure"])
++                assert_prediction_alignment(clean, prediction, count=n)
++                check(np.array_equal(prediction["node_idxs"], validation["target_node_idxs"])
++                      and np.array_equal(prediction["labels"], validation["labels"]), "validated prediction order differs")
++                check(np.array_equal(exposure["target_node_idxs"], prediction["node_idxs"]), "exposure order differs")
++                reconcile_exposure({**exposure, "is_prediction_query": np.ones(n, dtype=bool)}, arm["totals"])
++                validated_arm = validation.get("per_arm", validation.get("arms", {}))[arm_name]
++                check(validated_arm["totals"] == arm["totals"], "validation/manifest edge totals differ")
++                if "base_temporal" in validation:
++                    verify_policy_exposure(exposure, validation, arm_name)
++                check(not any(exposure[f"{prefix}temporal_{key}"].sum() for prefix in ("", "base_")
++                              for key in ("unknown", "known_violations")), "unresolved temporal status")
++                original = exposure["availability_original_token_counts"]
++                removed = exposure["availability_removed_future_tokens"] + exposure["availability_removed_unmatured_label_tokens"]
++                check(np.array_equal(original - removed, exposure["context_token_counts"]), "availability accounting differs")
++                untouched = exposure["changed_edges"] == 0
++                check(np.array_equal(prediction["preds"][untouched], clean["preds"][untouched]), "untouched scores differ")
++                auc = float(roc_auc_score(panel["labels"], prediction["preds"]))
++                check(abs(auc - binary_auroc(prediction["labels"], prediction["preds"])) < 1e-12, "independent AUROC differs")
++                check(abs(auc - arm["auroc"]) < 1e-12, "manifest AUROC differs")
++                group = arm_name.rsplit("_s", 1)[0] if "_s" in arm_name else arm_name
++                row = {"run": name, "database": info["database"], "task": info["task"], "context": ctx,
++                       "arm": arm_name, "group": group, "auroc": auc,
++                       "clean_auroc": float(roc_auc_score(panel["labels"], clean["preds"])),
++                       "changed_edges": int(exposure["changed_edges"].sum()),
++                       "eligible_edges_all_relations": int(exposure["eligible_edges"].sum()),
++                       "maximum_changed_edges_selected_pool": int(exposure["max_changed_edges"].sum()),
++                       "affected_queries": int((~untouched).sum()),
++                       "mean_abs_shift": float(np.abs(prediction["preds"].astype(float) - clean["preds"]).mean()),
++                       "n_queries": n}
++                rows.append(row)
++                group_rows.setdefault(group, []).append(row)
++                scores_by_group.setdefault(group, []).append(prediction["preds"])
++                loaded[arm_name] = (prediction, exposure)
++            for group, selected in group_rows.items():
++                groups.append({"run": name, "database": info["database"], "task": info["task"], "context": ctx,
++                               "group": group, "auroc_mean": float(np.mean([r["auroc"] for r in selected])),
++                               "clean_auroc": selected[0]["clean_auroc"],
++                               "mean_abs_shift": float(np.mean([r["mean_abs_shift"] for r in selected])),
++                               "changed_edges_by_seed": [r["changed_edges"] for r in selected],
++                               "affected_queries_by_seed": [r["affected_queries"] for r in selected], "n_queries": n})
++            if name == "labeled_support":
++                scores = np.asarray(scores_by_group["labeled_support_only"])
++                masks = [e["changed_edges"] > 0 for _, e in loaded.values()]
++                check(all(np.array_equal(masks[0], mask) for mask in masks), "support coverage differs by seed")
++                mask = masks[0]
++                old_manifest = read_json(root / "task_cycles" / context / "manifest.json")
++                old_scores = np.asarray([read_npz(root / "task_cycles" / context / old_manifest["arms"][f"task_other_cycles_s{s}"]["predictions"])["preds"]
++                                         for s in (101, 202, 303)])
++                def uncertainty(reference, panel=panel, scores=scores):
++                    return clustered_auc_delta(panel["labels"], reference, scores, panel["dates"],
++                                               panel["entities"], replicates=bootstrap_replicates)
++                support[str(ctx)] = {"delta_clean_uncertainty": uncertainty(clean["preds"]),
++                                     "delta_old_control_uncertainty": uncertainty(old_scores),
++                                     "affected_subset": {"n": int(mask.sum()), "positive": int(panel["labels"][mask].sum()),
++                                         "clean_auroc": float(roc_auc_score(panel["labels"][mask], clean["preds"][mask])),
++                                         "support_auroc_mean": float(np.mean([roc_auc_score(panel["labels"][mask], s[mask]) for s in scores])),
++                                         "old_auroc_mean": float(np.mean([roc_auc_score(panel["labels"][mask], s[mask]) for s in old_scores])),
++                                         "support_mean_abs_shift": float(np.abs(scores[:, mask] - clean["preds"][mask]).mean()),
++                                         "old_mean_abs_shift": float(np.abs(old_scores[:, mask] - clean["preds"][mask]).mean())}}
++    check(len(checkpoints) == 1, "checkpoint differs across panels")
++    return {"status": "verified", "independent_auroc": "sklearn.metrics.roc_auc_score versus project rank-sum implementation",
++            "checkpoint_hashes": list(next(iter(checkpoints))), "prediction_files": len(rows), "rows": rows,
++            "groups": groups, "labeled_support": support}
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("root", type=Path)
++    parser.add_argument("--output", type=Path, required=True)
++    args = parser.parse_args()
++    result = analyze(args.root)
++    args.output.mkdir(parents=True, exist_ok=False)
++    (args.output / "analysis.json").write_text(json.dumps(result, indent=2, allow_nan=False) + "\n")
++    lines = ["# Independently recalculated saved results", "", "Detailed metrics and support contrasts: [analysis.json](analysis.json).", "",
++             f"Verified {result['prediction_files']} prediction files.", "",
++             "AUROC averages per-seed AUROCs, not averaged predictions. Counts/coverage list seeds in order 101/202/303.",
++             "Eligible counts in the arrays cover all relations; maximum counts apply to the selected pool.", "",
++             "| Panel | Context | Group | Clean AUROC | AUROC mean | Mean abs shift | Changed edges | Affected queries |",
++             "|---|---:|---|---:|---:|---:|---|---|"]
++    for row in result["groups"]:
++        lines.append(f"| {row['run']} | {row['context']} | {row['group']} | {row['clean_auroc']:.4f} | {row['auroc_mean']:.4f} | "
++                     f"{row['mean_abs_shift']:.4f} | {row['changed_edges_by_seed']} | {row['affected_queries_by_seed']} |")
++    (args.output / "SUMMARY.md").write_text("\n".join(lines) + "\n")
++    print(args.output / "SUMMARY.md")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/experiments/analyze_relation_controls.py b/experiments/analyze_relation_controls.py
+new file mode 100644
+--- /dev/null
++++ b/experiments/analyze_relation_controls.py
+@@ -0,0 +1,265 @@
++"""Exploratory relation effects and RQ2 sensitivity models from saved evidence."""
++import argparse
++import json
++from pathlib import Path
++
++import numpy as np
++from scipy.stats import spearmanr
++
++from rfm_structure.analysis import assert_prediction_alignment, paired_statistics
++from rfm_structure.exploratory import (
++    clustered_auc_delta,
++    grouped_sensitivity_prediction,
++)
++from rfm_structure.metrics import binary_auroc
++from rfm_structure.provenance import file_identity
++from rfm_structure.validation import reconcile_exposure
++
++
++def npz(path):
++    with np.load(path, allow_pickle=False) as saved:
++        return {key: saved[key].copy() for key in saved.files}
++
++
++def relation_count(exposure, relation_ids, field="eligible_edges"):
++    counts = np.zeros(len(exposure["target_node_idxs"]), dtype=float)
++    selected = np.isin(exposure["relation_ids"], relation_ids)
++    np.add.at(counts, exposure["relation_query_indices"][selected], exposure[f"relation_{field}"][selected])
++    return counts
++
++
++def analyze(runs, reference, raw_dir, output, panel_path=None):
++    results = {"evidence_kind": "exploratory_relation_and_exposure_analysis", "runs": [str(r) for r in runs],
++               "relation_effects": [], "interactions": {}, "exposure_prediction": {},
++               "limitations": ["Post-exploration controls on the same single-task panel, not confirmatory tests.",
++                               "Groups differ in changed-edge count and exposure; effect per edge is not a causal estimate.",
++                               "Query-cycle controls include other rows in those cycles, not isolated query-edge replacements.",
++                               "Cluster intervals are sensitivity checks, conditional on three seeds and one checkpoint.",
++                               "Crossed cluster resampling does not eliminate temporal or outcome-window dependence.",
++                               "Held-out sensitivity models predict model response, not labels or causal structure effects.",
++                               "Original partial/full strengths differ in relation composition; no clean dose-response claim.",
++                               "Availability masks retained inputs after sampling; historical retrieval validity is not proven."]}
++    group_data = {}
++    canonical = npz(reference / "ctx48_lctx24/preds_base.npz")
++    policy = json.loads((reference / "matrix.json").read_text())["availability_policy"]
++    task_range = next(info for info in policy["tables"] if info["table"] == "driver-dnf:Test")
++    if panel_path is not None:
++        panel = npz(panel_path)
++        if not np.array_equal(panel["node_idxs"], canonical["node_idxs"]):
++            raise ValueError("panel metadata differs from prediction order")
++        labels, dates, drivers = panel["labels"], panel["dates"], panel["entities"]
++    else:
++        import pandas as pd
++
++        table = pd.read_parquet(raw_dir / "tasks/driver-dnf/test.parquet").iloc[
++            canonical["node_idxs"] - task_range["start"]
++        ].reset_index(drop=True)
++        labels = table["did_not_finish"].to_numpy().astype(int)
++        dates = table["date"].astype(str).to_numpy()
++        drivers = table["driverId"].to_numpy()
++    if not np.array_equal(labels, (canonical["labels"] > 0).astype(int)):
++        raise ValueError("raw task labels differ from saved paired labels")
++    results["panel"] = {"queries": len(labels), "dates": len(set(dates)), "drivers": len(set(drivers))}
++    for run in runs:
++        matrix = json.loads((run / "controls.json").read_text())
++        if not matrix["complete"] or matrix["status"] != "complete":
++            raise ValueError("relation-control run is incomplete")
++        for ctx in (48, 128):
++            directory = run / f"ctx{ctx}_lctx{ctx // 2}"
++            manifest = json.loads((directory / "manifest.json").read_text())
++            checked = json.loads((directory / "validation.json").read_text())
++            ref_directory = reference / directory.name
++            ref_manifest = json.loads((ref_directory / "manifest.json").read_text())
++            clean = npz(ref_directory / "preds_base.npz")
++            if checked["status"] != "passed" or not checked["complete"]:
++                raise ValueError("control has no passed validation")
++            if checked["batch_fingerprints"] != ref_manifest["validation"]["batch_fingerprints"]:
++                raise ValueError("control sampled context differs from reference")
++            if any(manifest["checkpoint"][key]["sha256"] != ref_manifest["checkpoint_provenance"][key]["sha256"]
++                   for key in ("config", "weights")):
++                raise ValueError("control checkpoint differs from reference")
++            for group, relation_ids in matrix["groups"].items():
++                if (ctx, group) in group_data:
++                    raise ValueError("duplicate context/control across supplied runs")
++                arm_scores, exposures, per_seed = [], [], []
++                for seed in (101, 202, 303):
++                    name = f"{group}_s{seed}"
++                    arm = manifest["arms"][name]
++                    pred_path, exposure_path = directory / arm["predictions"], directory / arm["exposure"]
++                    if file_identity(pred_path)["sha256"] != arm["prediction_sha256"] or file_identity(exposure_path)["sha256"] != arm["exposure_sha256"]:
++                        raise ValueError("control checksum mismatch")
++                    prediction, exposure = npz(pred_path), npz(exposure_path)
++                    assert_prediction_alignment(clean, prediction)
++                    if not np.array_equal(exposure["target_node_idxs"], clean["node_idxs"]):
++                        raise ValueError("control exposure differs from target order")
++                    reconcile_exposure({**exposure, "is_prediction_query": np.ones(702, dtype=bool)}, arm["totals"])
++                    if any(exposure[f"{prefix}temporal_{key}"].sum() for prefix in ("", "base_") for key in ("unknown", "known_violations")):
++                        raise ValueError("control temporal status is not valid")
++                    untouched = exposure["changed_edges"] == 0
++                    if not np.array_equal(prediction["preds"][untouched], clean["preds"][untouched]):
++                        raise ValueError("control changed predictions without changed links")
++                    scores = prediction["preds"].astype(float)
++                    if not np.isclose(binary_auroc(labels, scores), arm["auroc"], atol=1e-12):
++                        raise ValueError("recomputed AUROC differs")
++                    arm_scores.append(scores)
++                    exposures.append(exposure)
++                    per_seed.append({"seed": seed, "auroc": binary_auroc(labels, scores),
++                                     "changed_edges": int(exposure["changed_edges"].sum()),
++                                     "affected_queries": int((~untouched).sum()),
++                                     **paired_statistics(clean["preds"], scores)})
++                score_array = np.asarray(arm_scores)
++                sensitivity = np.mean(np.abs(score_array - clean["preds"]), axis=0)
++                changed = np.mean([exposure["changed_edges"] for exposure in exposures], axis=0)
++                affected = changed > 0
++                summary = {"context": ctx, "group": group, "relation_ids": relation_ids,
++                           "clean_auc": binary_auroc(labels, clean["preds"]),
++                           "auroc_mean": float(np.mean([r["auroc"] for r in per_seed])),
++                           "auroc_range": [min(r["auroc"] for r in per_seed), max(r["auroc"] for r in per_seed)],
++                           "affected_queries": int(affected.sum()), "changed_edges_mean": float(changed.sum()),
++                           "mean_abs_shift": float(sensitivity.mean()), "median_query_mean_abs_shift": float(np.median(sensitivity)),
++                           "per_seed": per_seed,
++                           "uncertainty": clustered_auc_delta(labels, clean["preds"], score_array, dates, drivers)}
++                summary["affected_subset_auc_delta"] = (
++                    float(np.mean([binary_auroc(labels[affected], s[affected]) for s in score_array])
++                          - binary_auroc(labels[affected], clean["preds"][affected]))
++                    if affected.any() and len(np.unique(labels[affected])) == 2 else None
++                )
++                group_data[(ctx, group)] = {"clean": clean["preds"], "scores": score_array,
++                                           "exposures": exposures, "sensitivity": sensitivity,
++                                           "changed": changed, "relation_ids": relation_ids}
++                results["relation_effects"].append(summary)
++    required = {"task_driver", "database_all", "database_driver", "database_constructor",
++                "database_race", "race_circuit", "task_query_cycles", "task_other_cycles"}
++    if set(group_data) != {(ctx, group) for ctx in (48, 128) for group in required}:
++        raise ValueError("analysis requires both the six relation groups and two task-cycle controls at both contexts")
++    for ctx in (48, 128):
++        clean = group_data[(ctx, "task_driver")]["clean"]
++        full = np.array([npz(reference / f"ctx{ctx}_lctx{ctx // 2}" / f"preds_a100_s{seed}.npz")["preds"]
++                         for seed in (101, 202, 303)])
++        task = group_data[(ctx, "task_driver")]["scores"]
++        database = group_data[(ctx, "database_all")]["scores"]
++        residual = (full - clean) - ((task - clean) + (database - clean))
++        query = group_data[(ctx, "task_query_cycles")]["scores"]
++        other = group_data[(ctx, "task_other_cycles")]["scores"]
++        task_cycle_residual = (task - clean) - ((query - clean) + (other - clean))
++        results["interactions"][str(ctx)] = {"mean_absolute_nonadditive_score_residual": float(np.abs(residual).mean()),
++                                           "fraction_scores_nonadditive": float((residual != 0).mean()),
++                                           "task_cycle_mean_absolute_nonadditive_residual": float(np.abs(task_cycle_residual).mean()),
++                                           "caution": "Nonadditivity is an exact score identity, not a causal interaction estimate."}
++    records, responses, date_groups, driver_groups = [], [], [], []
++    group_names = sorted({group for _, group in group_data})
++    base_feature_names = ["context128"] + [f"group_{name}" for name in group_names]
++    exposure_feature_names = ["eligible", "unique_parents", "targeted_eligible", "targeted_maximum",
++                              "retained_tokens", "share_task", "share_db_driver", "share_db_constructor", "share_db_race", "share_circuit"]
++    support_feature_names = ["retained_support", "abs_clean_score"]
++    post_feature_names = ["changed", "feat_absolute_delta", "nbr_absolute_delta"]
++    for (ctx, group), data in group_data.items():
++        e = data["exposures"][0]
++        registry = json.loads((reference / f"ctx{ctx}_lctx{ctx // 2}/manifest.json").read_text())["relation_index"]
++        categories = {
++            "task": [int(r) for r, m in registry.items() if m["child_table"] == "driver-dnf"],
++            "db_driver": [int(r) for r, m in registry.items() if m["parent_table"] == "drivers" and m["child_table"] != "driver-dnf"],
++            "db_constructor": [int(r) for r, m in registry.items() if m["parent_table"] == "constructors"],
++            "db_race": [int(r) for r, m in registry.items() if m["parent_table"] == "races"],
++            "circuit": [int(r) for r, m in registry.items() if m["parent_table"] == "circuits"],
++        }
++        denominators = np.maximum(e["eligible_edges"], 1)
++        numeric = np.column_stack([
++            np.log1p(e["eligible_edges"]), np.log1p(e["unique_parent_nodes"]),
++            np.log1p(relation_count(e, data["relation_ids"])), np.log1p(e["max_changed_edges"]),
++            e["context_token_counts"] / ctx,
++            *[relation_count(e, ids) / denominators for ids in categories.values()],
++            np.log1p(e["labeled_support_counts"]), np.abs(data["clean"]), np.log1p(data["changed"]),
++            np.log1p(np.mean([x["fanout_feat_absolute_delta"] for x in data["exposures"]], axis=0)),
++            np.log1p(np.mean([x["fanout_nbr_absolute_delta"] for x in data["exposures"]], axis=0)),
++        ])
++        for i in np.flatnonzero(data["changed"] > 0):
++            records.append([float(ctx == 128), *[float(group == name) for name in group_names], *numeric[i]])
++            responses.append(data["sensitivity"][i])
++            date_groups.append(dates[i])
++            driver_groups.append(drivers[i])
++    features = np.asarray(records)
++    nbase, nexp, nsupport = len(base_feature_names), len(exposure_feature_names), len(support_feature_names)
++    specs = {"group_context": list(range(nbase)),
++             "plus_exposure_composition": list(range(nbase + nexp)),
++             "plus_support_only": list(range(nbase)) + [nbase + nexp],
++             "plus_clean_score_only": list(range(nbase)) + [nbase + nexp + 1],
++             "exposure_and_support": list(range(nbase + nexp + 1)),
++             "plus_support_clean_score": list(range(nbase)) + list(range(nbase + nexp, nbase + nexp + nsupport)),
++             "all_pre_intervention": list(range(nbase + nexp + nsupport)),
++             "plus_realized_fanout_diagnostics": list(range(features.shape[1]))}
++    results["exposure_prediction"]["feature_names"] = base_feature_names + exposure_feature_names + support_feature_names + post_feature_names
++    results["exposure_prediction"]["scope"] = "Affected query/control records only; all contexts/control repetitions of a held-out date or driver stay held out. Fixed linear ridge, no tuning."
++    for grouping, groups in (("date", date_groups), ("driver", driver_groups)):
++        results["exposure_prediction"][grouping] = {
++            name: grouped_sensitivity_prediction(features[:, indices], responses, groups)
++            for name, indices in specs.items()
++        }
++    results["exposure_prediction"]["within_control"] = {}
++    for group in group_names:
++        selected = features[:, 1 + group_names.index(group)] == 1
++        if selected.sum() < 100:
++            continue
++        results["exposure_prediction"]["within_control"][group] = {}
++        for grouping, clusters in (("date", np.asarray(date_groups)), ("driver", np.asarray(driver_groups))):
++            results["exposure_prediction"]["within_control"][group][grouping] = {
++                name: grouped_sensitivity_prediction(features[selected][:, indices], np.asarray(responses)[selected], clusters[selected])
++                for name, indices in specs.items() if name in (
++                    "group_context", "plus_exposure_composition", "plus_support_only", "plus_clean_score_only", "all_pre_intervention"
++                )
++            }
++    for ctx in (48, 128):
++        for group in ("task_driver", "database_all", "task_query_cycles", "task_other_cycles"):
++            data = group_data[(ctx, group)]
++            support = data["exposures"][0]["labeled_support_counts"]
++            associations = {}
++            for field, vector in (("support", support), ("changed", data["changed"]),
++                                  ("eligible", data["exposures"][0]["eligible_edges"])):
++                associations[field] = float(spearmanr(vector, data["sensitivity"]).statistic) if np.ptp(vector) else None
++            summary = next(row for row in results["relation_effects"] if row["context"] == ctx and row["group"] == group)
++            summary["sensitivity_associations"] = associations
++            summary["support_subgroups"] = []
++            for name, mask in (("none", support == 0), ("one_to_three", (support > 0) & (support <= 3)), ("four_plus", support >= 4)):
++                if not mask.any():
++                    continue
++                summary["support_subgroups"].append({"name": name, "n": int(mask.sum()),
++                    "mean_abs_shift": float(data["sensitivity"][mask].mean()),
++                    "auc_delta": float(np.mean([binary_auroc(labels[mask], s[mask]) for s in data["scores"]])
++                                       - binary_auroc(labels[mask], data["clean"][mask])) if len(np.unique(labels[mask])) == 2 else None})
++    output.mkdir(exist_ok=False)
++    (output / "analysis.json").write_text(json.dumps(results, indent=2, allow_nan=False) + "\n")
++    lines = ["# Exploratory relation controls", "", "Detailed contrasts and RQ2 models: [analysis.json](analysis.json).", "",
++              "Same 702 sampled queries and context fingerprints; three matching seeds; no confirmatory claims.",
++              "Affected queries are the union across seeds; changed edges are the seed mean. Budgets are not matched.", "",
++              "| Context | Control | AUROC mean | Δ clean | Affected queries (union) | Changed edges (mean) | Mean abs score shift | Crossed-cluster interval for Δ |",
++             "|---|---|---:|---:|---:|---:|---:|---|"]
++    for row in results["relation_effects"]:
++        lo, hi = row["uncertainty"]["crossed_percentile_95"]
++        lines.append(f"| {row['context']} | {row['group']} | {row['auroc_mean']:.4f} | "
++                     f"{row['uncertainty']['point']:+.4f} | {row['affected_queries']} | "
++                     f"{row['changed_edges_mean']:.0f} | {row['mean_abs_shift']:.4f} | [{lo:+.4f}, {hi:+.4f}] |")
++    lines += ["", "## Held-out sensitivity prediction", "", "Response: log1p(seed-mean absolute score shift). Out-of-fold R² is not causal evidence.", "",
++              "| Features | Date holdout R² | Driver holdout R² |", "|---|---:|---:|"]
++    for name in specs:
++        lines.append(f"| {name} | {results['exposure_prediction']['date'][name]['out_of_fold_r2']:.4f} | "
++                     f"{results['exposure_prediction']['driver'][name]['out_of_fold_r2']:.4f} |")
++    lines += ["", "## Limitations", *[f"- {text}" for text in results["limitations"]]]
++    (output / "SUMMARY.md").write_text("\n".join(lines) + "\n")
++    print(output / "SUMMARY.md")
++    return results
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("runs", nargs="+", type=Path)
++    parser.add_argument("--reference", type=Path, default=Path("results/preliminary/2026-10-05_validated"))
++    metadata = parser.add_mutually_exclusive_group(required=True)
++    metadata.add_argument("--raw-dir", type=Path)
++    metadata.add_argument("--panel", type=Path, help="curated panel.npz; avoids external raw data")
++    parser.add_argument("--output", type=Path, required=True)
++    args = parser.parse_args()
++    analyze(args.runs, args.reference, args.raw_dir, args.output, args.panel)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/experiments/audit_support_links.py b/experiments/audit_support_links.py
+new file mode 100644
+--- /dev/null
++++ b/experiments/audit_support_links.py
+@@ -0,0 +1,147 @@
++"""Replay frozen F1 contexts and classify changed task links without model inference."""
++import argparse
++import json
++from pathlib import Path
++
++import numpy as np
++from run_clean_rewire import build_tasks
++
++from rfm_structure.data import load_availability_policy, load_relation_index
++from rfm_structure.provenance import file_identity
++from rfm_structure.relation_controls import relation_groups
++from rfm_structure.rewiring import rewire_f2p_nbr
++from rfm_structure.validation import (
++    available_context,
++    batch_fingerprint,
++    configure_complete_evaluation,
++    evaluator_query_arrays,
++    real_query_batch,
++    visible_support_source_mask,
++)
++
++
++def classify_links(base, rewired, relation):
++    """Count source/FK slots once, classifying label visibility from retained cells."""
++    output = []
++    for b in range(len(base["node_idxs"])):
++        kept = np.flatnonzero(~base["is_padding"][b])
++        target = next(s for s in kept if base["is_targets"][b, s])
++        query = int(base["node_idxs"][b, target])
++        label_column = base["col_name_idxs"][b, target]
++        present = set(base["node_idxs"][b, kept].tolist())
++        visible = {int(base["node_idxs"][b, s]) for s in kept
++                   if not base["is_targets"][b, s] and base["is_task_nodes"][b, s]
++                   and base["col_name_idxs"][b, s] == label_column
++                   and np.isfinite(base["number_values"][b, s]).all()
++                   and int(base["node_idxs"][b, s]) != query}
++        row = {"target_node": query, "eligible": dict.fromkeys(("query", "visible_label", "hidden_label"), 0),
++               "changed": dict.fromkeys(("query", "visible_label", "hidden_label"), 0),
++               "visible_pool_distinct_parents": 0}
++        seen, parents = set(), set()
++        for s in kept:
++            node = int(base["node_idxs"][b, s])
++            kind = "query" if node == query else "visible_label" if node in visible else "hidden_label"
++            for slot in range(base["f2p_nbr_idxs"].shape[-1]):
++                if base["f2p_rel_idxs"][b, s, slot] != relation:
++                    continue
++                parent = int(base["f2p_nbr_idxs"][b, s, slot])
++                if (node, slot) in seen or parent not in present:
++                    continue
++                seen.add((node, slot))
++                row["eligible"][kind] += 1
++                if kind == "visible_label":
++                    parents.add(parent)
++                row["changed"][kind] += int(rewired[b, s, slot] != parent)
++        row["visible_pool_distinct_parents"] = len(parents)
++        output.append(row)
++    return output
++
++
++def audit(pre_dir, release):
++    from rt.eval_utils import build_evaluator
++
++    policy = load_availability_policy(pre_dir)
++    relation, = relation_groups(load_relation_index(pre_dir, "rel-f1"))["task_driver"]
++    tasks = build_tasks(str(pre_dir))
++    report = {"method": "CPU context replay; independent retained-cell classification; source/FK slots counted once",
++              "contexts": {}}
++    for ctx in (48, 128):
++        context = f"ctx{ctx}_lctx{ctx // 2}"
++        ev = build_evaluator(tasks, str(pre_dir), embedding_model="all-MiniLM-L12-v2", d_text=384,
++                             device="cpu", ctx_size=ctx, local_ctx_size=ctx // 2, items_per_task=702,
++                             num_workers=0, context_seed=0, shuffle_seed=0)
++        loader = configure_complete_evaluation(ev, 702)
++        records = {name: {str(seed): [] for seed in (101, 202, 303)} for name in ("task_cycles", "labeled_support")}
++        fingerprints, ids = [], []
++        for raw in loader:
++            real, _ = real_query_batch(raw)
++            base, _ = available_context(real, policy)
++            fingerprints.append(batch_fingerprint(base))
++            query_ids, _, _ = evaluator_query_arrays(base)
++            ids.extend(query_ids.tolist())
++            for name in records:
++                for seed in (101, 202, 303):
++                    rewired = rewire_f2p_nbr(base["f2p_nbr_idxs"], base["f2p_rel_idxs"], base["node_idxs"],
++                        base["is_padding"], seed, alpha=1.0, relation_ids=[relation],
++                        cycle_mode="excluding_query" if name == "task_cycles" else None,
++                        query_node_ids=np.asarray(query_ids),
++                        source_mask=visible_support_source_mask(base) if name == "labeled_support" else None)
++                    records[name][str(seed)].extend(classify_links(base, rewired, relation))
++        summary = {}
++        for name, seeds in records.items():
++            directory = release / name / context
++            validation = json.loads((directory / "validation.json").read_text())
++            if fingerprints != validation["batch_fingerprints"] or ids != validation["target_node_idxs"]:
++                raise ValueError("replayed contexts differ from saved run")
++            manifest = json.loads((directory / "manifest.json").read_text())
++            summary[name] = {}
++            for seed, rows in seeds.items():
++                group = "task_other_cycles" if name == "task_cycles" else "labeled_support_only"
++                arm = manifest["arms"][f"{group}_s{seed}"]
++                with np.load(directory / arm["exposure"], allow_pickle=False) as exposure:
++                    changed = np.asarray([sum(row["changed"].values()) for row in rows])
++                    if not np.array_equal(changed, exposure["changed_edges"]):
++                        raise ValueError("visibility audit differs from saved edge exposure")
++                totals = {field: {kind: sum(row[field][kind] for row in rows)
++                                  for kind in ("query", "visible_label", "hidden_label")} for field in ("eligible", "changed")}
++                if totals["changed"]["query"] or (name == "labeled_support" and totals["changed"]["hidden_label"]):
++                    raise ValueError("excluded source links changed")
++                summary[name][seed] = {**totals, "affected_queries": int((changed > 0).sum()),
++                    "visible_pool_zero_queries": sum(row["eligible"]["visible_label"] == 0 for row in rows),
++                    "visible_pool_singleton_queries": sum(row["eligible"]["visible_label"] == 1 for row in rows),
++                    "per_query": rows}
++        report["contexts"][str(ctx)] = summary
++    return report
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--pre-dir", type=Path, required=True)
++    parser.add_argument("--release", type=Path, required=True)
++    parser.add_argument("--output", type=Path, required=True)
++    args = parser.parse_args()
++    arrays_path = args.output.with_suffix(".npz")
++    if args.output.exists() or arrays_path.exists():
++        raise FileExistsError("audit output already exists")
++    result = audit(args.pre_dir, args.release)
++    arrays = {}
++    for ctx, groups in result["contexts"].items():
++        for group, seeds in groups.items():
++            for seed, summary in seeds.items():
++                rows = summary.pop("per_query")
++                prefix = f"ctx{ctx}_{group}_s{seed}_"
++                for field in ("target_node", "visible_pool_distinct_parents"):
++                    arrays[prefix + field] = np.asarray([row[field] for row in rows])
++                for field in ("eligible", "changed"):
++                    for kind in ("query", "visible_label", "hidden_label"):
++                        arrays[prefix + field + "_" + kind] = np.asarray([row[field][kind] for row in rows])
++    with arrays_path.open("xb") as handle:
++        np.savez_compressed(handle, **arrays)
++    result["per_query_arrays"] = {**file_identity(arrays_path), "path": arrays_path.name}
++    with args.output.open("x") as handle:
++        json.dump(result, handle, indent=2, allow_nan=False)
++        handle.write("\n")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/experiments/curate_final_results.py b/experiments/curate_final_results.py
+new file mode 100644
+--- /dev/null
++++ b/experiments/curate_final_results.py
+@@ -0,0 +1,128 @@
++"""Copy the completed follow-up evidence into a portable, losslessly compressed release.
++
++Original runs are never modified. Prediction/exposure arrays are compared before
++and after compression; original file hashes are retained alongside new hashes.
++"""
++import argparse
++import json
++from pathlib import Path
++
++import numpy as np
++import yaml
++
++from rfm_structure.provenance import file_identity
++
++RUNS = {
++    "relations": ("relation_controls_1791303494752864585", "controls.json", "driver-dnf"),
++    "task_cycles": ("relation_controls_1791304770103606851", "controls.json", "driver-dnf"),
++    "labeled_support": ("relation_controls_1792159329463334922", "controls.json", "driver-dnf"),
++    "driver_top3": ("preliminary_1791306037626899928", "matrix.json", "driver-top3"),
++    "arxiv": ("replication_rel-arxiv_1791980546835938447", "replication.json", "paper-citation"),
++    "trial": ("replication_rel-trial_1791980898619531972", "replication.json", "study-outcome"),
++}
++
++
++def read_json(path):
++    return json.loads(path.read_text())
++
++
++def read_npz(path):
++    with np.load(path, allow_pickle=False) as saved:
++        return {key: saved[key].copy() for key in saved.files}
++
++
++def portable(value):
++    """Remove machine-specific absolute locations, retaining names and identities."""
++    if isinstance(value, dict):
++        return {key: portable(item) for key, item in value.items()}
++    if isinstance(value, list):
++        return [portable(item) for item in value]
++    if isinstance(value, str) and value.startswith("/"):
++        return Path(value).name
++    return value
++
++
++def write_json(path, value):
++    path.write_text(json.dumps(portable(value), indent=2, allow_nan=False) + "\n")
++
++
++def compress(source, destination, expected):
++    original = file_identity(source)
++    if original["sha256"] != expected:
++        raise ValueError(f"original checksum mismatch: {source}")
++    arrays = read_npz(source)
++    np.savez_compressed(destination, **arrays)
++    restored = read_npz(destination)
++    if set(arrays) != set(restored) or any(
++        arrays[key].dtype != restored[key].dtype
++        or not np.array_equal(arrays[key], restored[key], equal_nan=True) for key in arrays
++    ):
++        raise ValueError("lossless compression check failed")
++    return original, file_identity(destination)
++
++
++def curate(source_root, output, raw_dirs):
++    import pandas as pd
++
++    output.mkdir(parents=True, exist_ok=False)
++    catalog = {"schema_version": 1, "baseline": "81e4fa4fdb98ea6ce5973ec4772f91dc4ca9a468",
++               "primary": "../../preliminary/2026-10-05_validated", "runs": {}}
++    for name, (run_id, state_name, task) in RUNS.items():
++        source, dest = source_root / run_id, output / name
++        state = read_json(source / state_name)
++        if not state["complete"] or state["status"] != "complete":
++            raise ValueError(f"incomplete source: {source}")
++        dest.mkdir()
++        database = state.get("database", "rel-f1")
++        raw = raw_dirs[database]
++        spec = yaml.safe_load((raw / "tasks" / task / "manifest.yaml").read_text())
++        table_path = raw / "tasks" / task / "test.parquet"
++        table = pd.read_parquet(table_path)
++        policy = state.get("availability_policy", state.get("policy"))
++        offset = next(item["start"] for item in policy["tables"] if item["table"] == f"{task}:Test")
++        clean_root = source if name in ("driver_top3", "arxiv", "trial") else Path("results/preliminary/2026-10-05_validated")
++        clean = read_npz(clean_root / "ctx48_lctx24/preds_base.npz")
++        panel = table.iloc[clean["node_idxs"] - offset]
++        labels = panel[spec["target_col"]].to_numpy().astype(int)
++        if not np.array_equal(labels, clean["labels"] > 0):
++            raise ValueError("raw labels differ from saved predictions")
++        np.savez_compressed(dest / "panel.npz", node_idxs=clean["node_idxs"], labels=labels,
++                            dates=panel[spec["time_col"]].astype(str).to_numpy(dtype=str),
++                            entities=panel[spec["entity_col"]].to_numpy())
++        write_json(dest / "panel_source.json", {"database": database, "task": task, "test_offset": offset,
++                   "manifest": spec, "official_test_size": len(table), "raw_test": file_identity(table_path),
++                   "raw_manifest": file_identity(raw / "tasks" / task / "manifest.yaml")})
++        identities = {}
++        for ctx in (48, 128):
++            context = f"ctx{ctx}_lctx{ctx // 2}"
++            source_dir, dest_dir = source / context, dest / context
++            dest_dir.mkdir()
++            manifest = read_json(source_dir / "manifest.json")
++            for arm in manifest["arms"].values():
++                for field, hash_field in (("predictions", "prediction_sha256"), ("exposure", "exposure_sha256")):
++                    filename = arm[field]
++                    original, compressed = compress(source_dir / filename, dest_dir / filename, arm[hash_field])
++                    identities[f"{context}/{filename}"] = {"original": original, "curated": compressed}
++                    arm[hash_field] = compressed["sha256"]
++            write_json(dest_dir / "manifest.json", manifest)
++            write_json(dest_dir / "validation.json", read_json(source_dir / "validation.json"))
++        write_json(dest / state_name, state)
++        write_json(dest / "artifact_lineage.json", identities)
++        catalog["runs"][name] = {"source_run": run_id, "state_file": state_name, "database": database,
++                                 "task": task, "clean_reference": "." if clean_root == source else catalog["primary"]}
++    write_json(output / "catalog.json", catalog)
++    print(output)
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--source", type=Path, default=Path("results/runs"))
++    parser.add_argument("--output", type=Path, required=True)
++    for name in ("f1", "arxiv", "trial"):
++        parser.add_argument(f"--{name}-raw", type=Path, required=True)
++    args = parser.parse_args()
++    curate(args.source, args.output, {"rel-f1": args.f1_raw, "rel-arxiv": args.arxiv_raw, "rel-trial": args.trial_raw})
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/experiments/finalize_result_inventory.py b/experiments/finalize_result_inventory.py
+new file mode 100644
+--- /dev/null
++++ b/experiments/finalize_result_inventory.py
+@@ -0,0 +1,53 @@
++"""Freeze final source identities and checksums without modifying the Git index."""
++import argparse
++import difflib
++import hashlib
++import json
++import subprocess
++from pathlib import Path
++
++from rfm_structure.provenance import file_identity, source_identity
++
++
++def freeze(root, repository):
++    targets = ("source_at_finalization.patch", "source_identity.json", "checksums.json")
++    if any((root / name).exists() for name in targets):
++        raise FileExistsError("refusing to overwrite existing source snapshot or inventory")
++    baseline = json.loads((root / "catalog.json").read_text())["baseline"]
++    names = subprocess.check_output(["git", "ls-files", "--cached", "--others", "--exclude-standard"],
++                                    cwd=repository, text=True).splitlines()
++    selected = sorted(name for name in names if name in ("pyproject.toml", "uv.lock") or (
++        name.startswith(("src/", "experiments/", "tests/", "scripts/", "vendor/"))
++        and Path(name).suffix in (".py", ".rs", ".sh", ".toml", ".lock")))
++    tracked = set(subprocess.check_output(["git", "ls-files"], cwd=repository, text=True).splitlines())
++    delta = subprocess.check_output(["git", "diff", "--binary", baseline, "--", *[n for n in selected if n in tracked]],
++                                    cwd=repository, text=True)
++    for name in selected:
++        if name not in tracked:
++            content = (repository / name).read_text().splitlines(keepends=True)
++            delta += f"diff --git a/{name} b/{name}\nnew file mode 100644\n"
++            delta += "".join(difflib.unified_diff([], content, fromfile="/dev/null", tofile=f"b/{name}"))
++    (root / "source_at_finalization.patch").write_text(delta)
++    identities = {name: {key: value for key, value in file_identity(repository / name).items() if key != "path"}
++                  for name in selected}
++    identity = {**source_identity(repository), "baseline": baseline, "files": identities,
++                "scope": "current finalization source, not an exact reconstruction of each historical run"}
++    (root / "source_identity.json").write_text(json.dumps(identity, indent=2) + "\n")
++    inventory = {}
++    for path in sorted(root.rglob("*")):
++        if path.is_file():
++            content = path.read_bytes()
++            inventory[str(path.relative_to(root))] = {"bytes": len(content), "sha256": hashlib.sha256(content).hexdigest()}
++    (root / "checksums.json").write_text(json.dumps(inventory, indent=2) + "\n")
++    print(f"Inventoried {len(inventory)} files; Git index unchanged.")
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("root", type=Path)
++    args = parser.parse_args()
++    freeze(args.root, Path(__file__).resolve().parents[1])
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/experiments/prepare_replication_embeddings.py b/experiments/prepare_replication_embeddings.py
+new file mode 100644
+--- /dev/null
++++ b/experiments/prepare_replication_embeddings.py
+@@ -0,0 +1,243 @@
++"""Prepare scoped MiniLM embeddings, or audit coverage without encoding/inference.
++
++Marker vectors encode lookup IDs exactly in four base-128 BF16 digits. Sampling
++uses an isolated temporary view of the intact native data, never replacements
++inside the source artifact. Fingerprints exclude only the two embedding tensors,
++exactly as run_database_replications.validate_panel does. No availability filter
++is applied: even placeholders and subsequently masked cells need valid lookups.
++"""
++import argparse
++import json
++import os
++import tempfile
++import time
++from pathlib import Path
++
++import numpy as np
++
++from rfm_structure.provenance import file_identity
++from rfm_structure.replication import (
++    MINILM_REVISION,
++    MINILM_WEIGHTS_SHA256,
++    replication_evaluator,
++    selected_query_ids,
++    validate_embedding_scope,
++)
++from rfm_structure.validation import batch_fingerprint, numpy_batch
++
++TASKS = {"rel-arxiv": "paper-citation", "rel-trial": "study-outcome"}
++CONTEXTS = (48, 128)
++DIMENSION = 384
++EMBEDDING_FILE = "text_emb_all-MiniLM-L12-v2.bin"
++MODEL = "sentence-transformers/all-MiniLM-L12-v2"
++
++
++def write_markers(path, rows):
++    """Create BF16 lookup markers; all four digits are exactly representable."""
++    from ml_dtypes import bfloat16
++
++    if not 0 < rows <= 128 ** 4:
++        raise ValueError("text row count cannot be represented by marker digits")
++    with path.open("xb") as handle:
++        handle.truncate(rows * DIMENSION * 2)
++    vectors = np.memmap(path, dtype=np.uint16, mode="r+", shape=(rows, DIMENSION))
++    for start in range(0, rows, 8192):
++        ids = np.arange(start, min(start + 8192, rows), dtype=np.int64)
++        digits = ((ids[:, None] // (128 ** np.arange(4))) % 128).astype(np.float32)
++        vectors[start:start + len(ids), :4] = digits.astype(bfloat16).view(np.uint16)
++    vectors.flush()
++    del vectors
++
++
++def decode_markers(values, rows):
++    """Include padded/placeholder lookups too; padding zeros refer to text ID 0."""
++    digits = np.asarray(values)[..., :4]
++    if (not np.isfinite(digits).all() or np.any(digits < 0)
++            or np.any(digits >= 128) or np.any(digits != np.floor(digits))):
++        raise ValueError("invalid lookup marker")
++    ids = (digits.astype(np.int64) * (128 ** np.arange(4))).sum(axis=-1)
++    if np.any(ids >= rows):
++        raise ValueError("lookup marker outside text table")
++    return np.unique(ids)
++
++
++def collect_coverage(pre_dir, database, task, query_ids, rows, *, evaluator_factory=None):
++    """Replay the frozen explicit-node sampler with temporary marker embeddings."""
++    factory = evaluator_factory or replication_evaluator
++    temp_root = Path("/tmp/opencode")
++    temp_root.mkdir(exist_ok=True)
++    covered = set()
++    fingerprints = {}
++    with tempfile.TemporaryDirectory(prefix="replication-markers-", dir=temp_root) as tmp:
++        root = Path(tmp)
++        directory = root / database
++        directory.mkdir()
++        for source in (Path(pre_dir) / database).iterdir():
++            if source.name not in (EMBEDDING_FILE, "embedding_scope.json") and source.is_file():
++                (directory / source.name).symlink_to(source.resolve())
++        write_markers(directory / EMBEDDING_FILE, rows)
++        for ctx in CONTEXTS:
++            ev = factory(root, task, query_ids, ctx, allow_marker_embeddings=True)
++            batches = list(ev.eval_loaders[task])
++            if len(batches) != 1:
++                raise ValueError("expected one frozen explicit-node batch")
++            arrays = numpy_batch(batches[0])
++            targets = arrays["is_targets"] & ~arrays["is_padding"]
++            actual_ids = (arrays["node_idxs"] * targets).sum(axis=1)
++            if (not np.all(targets.sum(axis=1) == 1) or not arrays["batch_mask"].all()
++                    or not np.array_equal(actual_ids, query_ids)):
++                raise ValueError("marker sampling differs from frozen query panel")
++            for key in ("text_values", "col_name_values"):
++                covered.update(decode_markers(arrays[key], rows).tolist())
++            fingerprints[str(ctx)] = batch_fingerprint({
++                key: value for key, value in arrays.items()
++                if key not in ("text_values", "col_name_values")
++            })
++            del ev, batches, arrays
++    return sorted(covered), fingerprints
++
++
++def verify_vector_layout(path, rows, covered):
++    """Every covered vector must be finite; every unused component must be NaN."""
++    if path.stat().st_size != rows * DIMENSION * 2:
++        raise ValueError("embedding file size does not match text rows and BF16 dimension")
++    selected = np.zeros(rows, dtype=bool)
++    selected[covered] = True
++    vectors = np.memmap(path, mode="r", dtype=np.uint16, shape=(rows, DIMENSION))
++    for start in range(0, rows, 8192):
++        bits = vectors[start:start + 8192]
++        special = (bits & 0x7F80) == 0x7F80
++        nan = special & ((bits & 0x007F) != 0)
++        mask = selected[start:start + len(bits)]
++        if special[mask].any() or not nan[~mask].all():
++            raise ValueError("covered vectors must be finite and unused vectors must be BF16 NaN")
++    del vectors
++
++
++def check_existing(pre_dir, database, query_ids, rows, covered, fingerprints):
++    directory = Path(pre_dir) / database
++    scope = json.loads((directory / "embedding_scope.json").read_text())
++    expected = {"database": database, "task": TASKS[database], "sampling_seed": 0,
++                "selection_seed": 20261007, "contexts": list(CONTEXTS), "text_rows": rows,
++                "query_ids": np.asarray(query_ids).tolist(), "encoded_text_ids": covered,
++                "encoded_text_count": len(covered), "context_fingerprints": fingerprints}
++    for key, value in expected.items():
++        if scope.get(key) != value:
++            raise ValueError(f"existing embedding scope differs from reconstructed {key}")
++    validate_embedding_scope(pre_dir, database, scope)
++    verify_vector_layout(directory / EMBEDDING_FILE, rows, covered)
++    return scope
++
++
++def encode_selected(texts, covered, *, device, batch_size):
++    """Load only the pinned cached encoder, in FP32 even on CUDA."""
++    import torch
++    from huggingface_hub import snapshot_download
++    from sentence_transformers import SentenceTransformer
++
++    snapshot = Path(snapshot_download(MODEL, revision=MINILM_REVISION, local_files_only=True))
++    weights = file_identity(snapshot / "model.safetensors")
++    if weights["sha256"] != MINILM_WEIGHTS_SHA256:
++        raise ValueError("cached MiniLM weights differ from pinned encoder")
++    model = SentenceTransformer(str(snapshot), device=device, local_files_only=True,
++                                model_kwargs={"dtype": torch.float32})
++    if any(p.dtype != torch.float32 for p in model.parameters() if p.is_floating_point()):
++        raise ValueError("MiniLM encoder must use FP32 parameters")
++    with torch.inference_mode():
++        vectors = model.encode([texts[index] for index in covered], batch_size=batch_size,
++                               convert_to_tensor=True, convert_to_numpy=False,
++                               normalize_embeddings=False, show_progress_bar=True)
++    if (vectors.dtype != torch.float32 or tuple(vectors.shape) != (len(covered), DIMENSION)
++            or not torch.isfinite(vectors).all()):
++        raise ValueError("encoder output must be finite FP32 384-dimensional vectors")
++    return vectors.to(torch.bfloat16).cpu().view(torch.int16).numpy().view(np.uint16), weights
++
++
++def publish_embeddings(directory, rows, covered, encoded, scope):
++    """Publish with exclusive hard links, scope last; never replace any artifact."""
++    if encoded.dtype != np.uint16 or encoded.shape != (len(covered), DIMENSION):
++        raise ValueError("encoded BF16 vector shape/dtype mismatch")
++    embedding = directory / EMBEDDING_FILE
++    scope_path = directory / "embedding_scope.json"
++    if any(path.exists() or path.is_symlink() for path in (embedding, scope_path)):
++        raise FileExistsError("refusing to overwrite existing embeddings or scope")
++    with tempfile.TemporaryDirectory(prefix=".replication-embedding-", dir=directory) as tmp:
++        staged = Path(tmp) / EMBEDDING_FILE
++        with staged.open("xb") as handle:
++            handle.truncate(rows * DIMENSION * 2)
++        vectors = np.memmap(staged, dtype=np.uint16, mode="r+", shape=(rows, DIMENSION))
++        vectors[:] = 0x7FC0  # canonical BF16 quiet NaN
++        vectors[covered] = encoded
++        vectors.flush()
++        del vectors
++        verify_vector_layout(staged, rows, covered)
++        scope = {**scope, "status": "complete", "embedding_file": {
++            **file_identity(staged), "path": str(embedding.resolve())}}
++        staged_scope = Path(tmp) / "embedding_scope.json"
++        staged_scope.write_text(json.dumps(scope, indent=2, allow_nan=False) + "\n")
++        os.link(staged, embedding)  # atomic no-clobber publication on same filesystem
++        try:
++            os.link(staged_scope, scope_path)
++        except BaseException:
++            # Remove only our own newly published inode, never somebody else's file.
++            if embedding.exists() and os.path.samefile(embedding, staged):
++                embedding.unlink()
++            raise
++    return scope
++
++
++def prepare(pre_dir, database, *, check_only=False, device="cpu", batch_size=64):
++    from rt.tasks import tasks_from_preprocessed
++
++    directory = Path(pre_dir) / database
++    if not check_only and any((directory / name).exists() or (directory / name).is_symlink()
++                              for name in (EMBEDDING_FILE, "embedding_scope.json")):
++        raise FileExistsError("refusing to overwrite existing embeddings or scope; use --check-existing")
++    if batch_size <= 0:
++        raise ValueError("batch size must be positive")
++    started = time.monotonic()
++    meta = json.loads((directory / "meta.json").read_text())
++    rows = meta["num_text_strings"]
++    tasks = [t for t in tasks_from_preprocessed(str(pre_dir), splits=("test",), dbs=[database])
++             if t.table_name == TASKS[database]]
++    if len(tasks) != 1 or tasks[0].task_type != "clf":
++        raise ValueError("expected exactly the frozen replication classification task")
++    task = tasks[0]
++    query_ids = selected_query_ids(pre_dir, task)
++    covered, fingerprints = collect_coverage(pre_dir, database, task, query_ids, rows)
++    if check_only:
++        return check_existing(pre_dir, database, query_ids, rows, covered, fingerprints)
++    texts = json.loads((directory / "text.json").read_text())
++    if len(texts) != rows:
++        raise ValueError("text table length differs from metadata")
++    encoded, weights = encode_selected(texts, covered, device=device, batch_size=batch_size)
++    scope = {"database": database, "task": TASKS[database], "sampling_seed": 0,
++             "selection_seed": 20261007, "contexts": list(CONTEXTS), "text_rows": rows,
++             "query_ids": query_ids.tolist(), "context_fingerprints": fingerprints,
++             "encoded_text_ids": covered, "encoded_text_count": len(covered),
++             "encoder_revision": MINILM_REVISION, "encoder_dtype": "float32",
++             "stored_dtype": "bfloat16", "encoder_weights": weights,
++             "seconds": time.monotonic() - started}
++    return publish_embeddings(directory, rows, covered, encoded, scope)
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--pre-dir", type=Path, required=True)
++    parser.add_argument("--database", choices=TASKS, required=True)
++    parser.add_argument("--check-existing", action="store_true",
++                        help="reconstruct marker coverage only; no encoding, downloads or model inference")
++    parser.add_argument("--device", default="cpu", choices=("cpu", "cuda"))
++    parser.add_argument("--batch-size", type=int, default=64)
++    args = parser.parse_args()
++    scope = prepare(args.pre_dir.resolve(), args.database, check_only=args.check_existing,
++                    device=args.device, batch_size=args.batch_size)
++    print(json.dumps({"status": "verified" if args.check_existing else "prepared",
++                      "database": args.database, "queries": len(scope["query_ids"]),
++                      "encoded_text_count": scope["encoded_text_count"],
++                      "context_fingerprints": scope["context_fingerprints"],
++                      "embedding_sha256": scope["embedding_file"]["sha256"]}, indent=2))
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/experiments/run_database_replications.py b/experiments/run_database_replications.py
+new file mode 100644
+--- /dev/null
++++ b/experiments/run_database_replications.py
+@@ -0,0 +1,230 @@
++"""Frozen 512-query task/entity-versus-database replication, not a search.
++
++Complete DB tables are retained. Explicit target nodes are selected uniformly
++without labels; the same sampled contexts, availability policy and checkpoint
++are used for clean and the two full-matching relation controls.
++"""
++import argparse
++import json
++import time
++from pathlib import Path
++from types import SimpleNamespace
++
++import numpy as np
++from run_clean_rewire import BaseWrap, RewireWrap, load_frozen_model, save_json
++
++from rfm_structure.data import load_availability_policy, load_relation_index
++from rfm_structure.metrics import binary_auroc
++from rfm_structure.provenance import (
++    file_identity,
++    preprocessing_identity,
++    software_versions,
++    source_identity,
++)
++from rfm_structure.replication import (
++    replication_evaluator,
++    replication_groups,
++    selected_query_ids,
++    validate_embedding_scope,
++)
++from rfm_structure.validation import (
++    EDGE_FIELDS,
++    attach_availability,
++    available_context,
++    batch_fingerprint,
++    capture_evaluator_masks,
++    evaluator_query_arrays,
++    numpy_batch,
++    real_query_batch,
++    rewire_and_validate_batch,
++    write_exposure_npz,
++)
++
++TASKS = {"rel-arxiv": ("paper-citation", "papers", 182),
++         "rel-trial": ("study-outcome", "studies", 365)}
++SEEDS = (101, 202, 303)
++CHECKPOINT_SHA = "4a369f065d8f69e1da11ee4326ceb9d32cf78ee69255a438449e971f681b7f83"
++
++
++def arms(groups):
++    return [("base", 0.0, 101, None)] + [
++        (f"{group}_s{seed}", 1.0, seed, ids)
++        for group, ids in groups.items() for seed in SEEDS
++    ]
++
++
++def validate_panel(ev, ids, groups, policy, directory, scope):
++    report = {"status": "in_progress", "complete": False, "target_node_idxs": [], "labels": [],
++              "batch_fingerprints": [], "availability_totals": {}, "per_arm": {}}
++    batches = {name: [] for name, _, _, _ in arms(groups)}
++    try:
++        for raw in ev.eval_loaders[ev.tasks[0]]:
++            arrays = numpy_batch(raw)
++            if not all(np.isfinite(arrays[key]).all() for key in ("text_values", "col_name_values")):
++                raise ValueError("frozen panel touched an unencoded/nonfinite embedding")
++            if scope and batch_fingerprint({k: v for k, v in arrays.items() if k not in ("text_values", "col_name_values")}) != scope["context_fingerprints"][str(ev.ctx_sizes[0])]:
++                raise ValueError("sampling differs from the scoped embedding coverage pass")
++            real, _ = real_query_batch(raw)
++            base, availability = available_context(real, policy)
++            report["batch_fingerprints"].append(batch_fingerprint(base))
++            target_ids, labels, _ = evaluator_query_arrays(base)
++            report["target_node_idxs"].extend(target_ids.tolist())
++            report["labels"].extend(labels.tolist())
++            for key, value in availability.items():
++                report["availability_totals"][key] = report["availability_totals"].get(key, 0) + int(value.sum())
++            for name, alpha, seed, relations in arms(groups):
++                evidence = rewire_and_validate_batch(base, seed, alpha, policy, relations)
++                if evidence["errors"] or evidence["base_temporal"]["unknown"] or evidence["temporal"]["unknown"]:
++                    raise ValueError(f"{name}: structural/temporal failure: {evidence['errors'][:20]}")
++                attach_availability(evidence["exposure"], availability)
++                batches[name].append(evidence["exposure"])
++        if not np.array_equal(report["target_node_idxs"], ids):
++            raise ValueError("not exactly the frozen target set/order")
++        if len(set(np.asarray(report["labels"]) > 0)) != 2:
++            raise ValueError("frozen selected panel has only one class")
++        for name, parts in batches.items():
++            exposure = write_exposure_npz(directory / f"validation_exposure_{name}.npz", parts)
++            report["per_arm"][name] = {
++                "totals": {key: int(exposure[key].sum()) for key in EDGE_FIELDS},
++                "affected_queries": int((exposure["changed_edges"] > 0).sum()),
++                "known_violations": int(exposure["temporal_known_violations"].sum()),
++                "unknown": int(exposure["temporal_unknown"].sum()),
++                "declared_timeless": int(exposure["temporal_declared_timeless"].sum()),
++            }
++        report.update(status="passed", complete=True)
++    except Exception as error:
++        report.update(status="failed", errors=[f"{type(error).__name__}: {error}"])
++        raise
++    finally:
++        save_json(directory / "validation.json", report)
++    return report
++
++
++def run_replication(pre_dir, database, checkpoint, output, *, dry_run=False):
++    import pandas as pd
++    from rt.tasks import tasks_from_preprocessed
++
++    task_name, entity, horizon = TASKS[database]
++    tasks = [t for t in tasks_from_preprocessed(str(pre_dir), splits=("test",), dbs=[database]) if t.table_name == task_name]
++    if len(tasks) != 1 or tasks[0].task_type != "clf":
++        raise ValueError("expected exactly the frozen classification task")
++    task = tasks[0]
++    policy = load_availability_policy(pre_dir, database)
++    registry = load_relation_index(pre_dir, database)
++    schema_tables = {info["table"].rsplit(":", 1)[0] for info in policy["tables"] if info["table"].endswith(":Db")}
++    groups = replication_groups(registry, task_name, entity, schema_tables)
++    ids = selected_query_ids(pre_dir, task)
++    task_info = next(info for info in policy["tables"] if info["table"] == f"{task_name}:Test")
++    if task_info["horizon_seconds"] != horizon * 86400:
++        raise ValueError("task horizon differs from frozen protocol")
++    meta = json.loads((pre_dir / database / "meta.json").read_text())
++    raw = Path(meta["source"])
++    task_rows = pd.read_parquet(raw / "tasks" / task_name / "test.parquet").iloc[ids - task_info["start"]]
++    import yaml
++
++    task_spec = yaml.safe_load((raw / "tasks" / task_name / "manifest.yaml").read_text())
++    raw_labels = task_rows[task_spec["target_col"]].to_numpy().astype(int)
++    scope_path = pre_dir / database / "embedding_scope.json"
++    scope = json.loads(scope_path.read_text()) if scope_path.exists() else None
++    validate_embedding_scope(pre_dir, database, scope)
++    output.mkdir(exist_ok=False)
++    status = {"status": "in_progress", "complete": False, "database": database, "task": task_name,
++              "protocol": "frozen_task_entity_vs_database_v1", "selection_seed": 20261007,
++              "query_ids": ids.tolist(), "n_queries": len(ids), "official_test_size": task_info["stop"] - task_info["start"],
++              "matching_seeds": list(SEEDS), "groups": groups, "horizon_days": horizon,
++              "availability_policy": policy, "embedding_scope": scope, "contexts": {},
++              "provenance": {"source": source_identity(Path(__file__).resolve().parents[1]),
++                             "software": software_versions(), "preprocessing": preprocessing_identity(pre_dir, database)},
++              "panel": {"positive": int(raw_labels.sum()), "dates": int(task_rows[task_spec["time_col"]].nunique()),
++                        "entities": int(task_rows[task_spec["entity_col"]].nunique())}}
++    save_json(output / "replication.json", status)
++    try:
++        evaluators, validated = {}, {}
++        for ctx in (48, 128):
++            directory = output / f"ctx{ctx}_lctx{ctx // 2}"
++            directory.mkdir()
++            ev = replication_evaluator(pre_dir, task, ids, ctx)
++            report = validate_panel(ev, ids, groups, policy, directory, scope)
++            if not np.array_equal(np.asarray(report["labels"]) > 0, raw_labels.astype(bool)):
++                raise ValueError("raw task labels differ from normalized evaluator labels")
++            evaluators[ctx], validated[ctx] = ev, report
++            status["contexts"][str(ctx)] = "validated"
++            save_json(output / "replication.json", status)
++            print(database, ctx, "validated all 512 queries and seven arms", flush=True)
++        if dry_run:
++            status.update(status="validated", complete=True)
++            return status
++        for ctx, ev in evaluators.items():
++            directory = output / f"ctx{ctx}_lctx{ctx // 2}"
++            started = time.monotonic()
++            model, identity = load_frozen_model(checkpoint, "cuda")
++            if identity["weights"]["sha256"] != CHECKPOINT_SHA:
++                raise ValueError("not the frozen RT-PluRel checkpoint")
++            ev.device = "cuda"
++            holder = SimpleNamespace(batch=None, batch_index=0, forward_calls=0,
++                                     fingerprints=validated[ctx]["batch_fingerprints"], availability_policy=policy)
++            capture_evaluator_masks(ev, holder)
++            wrappers = [("base", BaseWrap(model, holder, 101, 8))]
++            for name, _, seed, relations in arms(groups)[1:]:
++                if validated[ctx]["per_arm"][name]["totals"]["changed_edges"]:
++                    wrappers.append((name, RewireWrap(model, seed, 1.0, holder, 8, relations)))
++            outputs = list(ev.evaluate_raw([(wrapper, name) for name, wrapper in wrappers], [ctx], with_node_idxs=True))
++            if len(outputs) != 1:
++                raise ValueError("expected one task/context output")
++            _, _, labels, scores, _, returned_ids = outputs[0]
++            if not np.array_equal(returned_ids, ids) or not np.array_equal(labels, validated[ctx]["labels"]):
++                raise ValueError("paired inference differs from validated target/label order")
++            if holder.batch_index != len(holder.fingerprints):
++                raise ValueError("not every validated batch was replayed")
++            manifest = {"status": "in_progress", "complete": False, "database": database, "task": task_name,
++                        "context": ctx, "local_context": ctx // 2, "checkpoint": identity, "arms": {}}
++            runtime_wrappers = dict(wrappers)
++            for name, alpha, seed, relations in arms(groups):
++                path = directory / f"preds_{name}.npz"
++                predictions = np.asarray(scores[name] if name in scores else scores["base"], dtype=float)
++                if predictions.shape != (len(ids),) or not np.isfinite(predictions).all():
++                    raise ValueError("invalid replication scores")
++                with path.open("xb") as handle:
++                    np.savez(handle, labels=labels, preds=predictions, node_idxs=ids)
++                reference_path = directory / f"validation_exposure_{name}.npz"
++                with np.load(reference_path, allow_pickle=False) as expected:
++                    if name in runtime_wrappers:
++                        runtime = write_exposure_npz(directory / f"exposure_{name}.npz", runtime_wrappers[name].exposure_batches)
++                        if set(runtime) != set(expected.files) or any(not np.array_equal(runtime[key], expected[key], equal_nan=True) for key in expected.files):
++                            raise ValueError("runtime exposure differs from validation")
++                    untouched = expected["changed_edges"] == 0
++                    if not np.array_equal(predictions[untouched], np.asarray(scores["base"])[untouched]):
++                        raise ValueError("predictions changed without changed FK assignments")
++                manifest["arms"][name] = {"seed": None if alpha == 0 else seed, "relation_ids": relations,
++                                          "predictions": path.name, "prediction_sha256": file_identity(path)["sha256"],
++                                          "exposure": reference_path.name, "exposure_sha256": file_identity(reference_path)["sha256"],
++                                          "auroc": binary_auroc(labels, predictions),
++                                          **validated[ctx]["per_arm"][name]}
++            manifest.update(status="complete", complete=True, seconds=time.monotonic() - started,
++                            model_forward_attempts=holder.forward_calls)
++            save_json(directory / "manifest.json", manifest)
++            status["contexts"][str(ctx)] = "complete"
++            del model, wrappers
++        status.update(status="complete", complete=True)
++    except Exception as error:
++        status.update(status="failed", complete=False, errors=[f"{type(error).__name__}: {error}"])
++        raise
++    finally:
++        save_json(output / "replication.json", status)
++    return status
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--database", choices=TASKS, required=True)
++    parser.add_argument("--pre-dir", type=Path, required=True)
++    parser.add_argument("--checkpoint-dir", type=Path, required=True)
++    parser.add_argument("--dry-run", action="store_true")
++    args = parser.parse_args()
++    output = Path("results/runs") / f"replication_{args.database}_{time.time_ns()}"
++    run_replication(args.pre_dir, args.database, args.checkpoint_dir, output, dry_run=args.dry_run)
++    print(output)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/experiments/run_relation_controls.py b/experiments/run_relation_controls.py
+new file mode 100644
+--- /dev/null
++++ b/experiments/run_relation_controls.py
+@@ -0,0 +1,261 @@
++"""Exploratory paired relation controls on the already validated rel-f1 panel.
++
++Reuse clean/all-relations predictions only after exact sampled-input replay and
++checkpoint checks. Relation/cycle controls restrict the existing assignment;
++visible-support controls rematch within a selected source pool. Queries,
++sampled cells and common availability preparation are unchanged.
++"""
++import argparse
++import json
++import time
++from pathlib import Path
++from types import SimpleNamespace
++
++import numpy as np
++from run_clean_rewire import (
++    BaseWrap,
++    RewireWrap,
++    build_tasks,
++    load_frozen_model,
++    save_json,
++)
++
++from rfm_structure.analysis import analyze_matrix
++from rfm_structure.data import (
++    load_availability_policy,
++    load_expected_target_ids,
++    load_relation_index,
++)
++from rfm_structure.metrics import binary_auroc
++from rfm_structure.provenance import (
++    file_identity,
++    preprocessing_identity,
++    software_versions,
++    source_identity,
++)
++from rfm_structure.relation_controls import relation_groups
++from rfm_structure.validation import (
++    EDGE_FIELDS,
++    attach_availability,
++    available_context,
++    batch_fingerprint,
++    capture_evaluator_masks,
++    configure_complete_evaluation,
++    evaluator_query_arrays,
++    real_query_batch,
++    rewire_and_validate_batch,
++    visible_support_source_mask,
++    write_exposure_npz,
++)
++
++SEEDS = (101, 202, 303)
++CYCLE_MODES = {"task_query_cycles": "touching_query", "task_other_cycles": "excluding_query"}
++SOURCE_SELECTIONS = {"labeled_support_only": "visible_labeled_support"}
++
++
++def read_predictions(path):
++    with np.load(path, allow_pickle=False) as saved:
++        return {key: saved[key].copy() for key in saved.files}
++
++
++class CachedClean(BaseWrap):
++    """Prepare the validated clean batch without repeating clean RT inference."""
++
++    def __init__(self, model, holder, cache):
++        super().__init__(model, holder, SEEDS[0], inference_batch_size=8)
++        self.cache = dict(zip(cache["node_idxs"].tolist(), cache["preds"].tolist(), strict=True))
++
++    def predict_checked(self, batch, expected, eval_ctx_sizes, device, task, bool_as_num):
++        import torch
++
++        ids, _, _ = evaluator_query_arrays(expected)
++        predictions = torch.zeros(len(self.holder.batch_mask), dtype=torch.float32)
++        predictions[self.holder.batch_mask] = torch.tensor([self.cache[int(node)] for node in ids])
++        return {ctx: predictions for ctx in eval_ctx_sizes}
++
++
++def validate_groups(ev, groups, policy, reference, directory):
++    """Validate every control before weights load and persist compact exposure."""
++    report = {"status": "in_progress", "complete": False, "arms": {},
++              "target_node_idxs": [], "labels": [], "batch_fingerprints": []}
++    evidence_batches = {f"{group}_s{seed}": [] for group in groups for seed in SEEDS}
++    try:
++        loader = configure_complete_evaluation(ev, 702)
++        for raw in loader:
++            real, _ = real_query_batch(raw)
++            base, counts = available_context(real, policy)
++            report["batch_fingerprints"].append(batch_fingerprint(base))
++            ids, labels, _ = evaluator_query_arrays(base)
++            report["target_node_idxs"].extend(ids.tolist())
++            report["labels"].extend(labels.tolist())
++            for seed in SEEDS:
++                full = rewire_and_validate_batch(base, seed, 1.0, policy)
++                if full["errors"] or full["temporal"]["unknown"]:
++                    raise ValueError("all-relations reference no longer validates")
++                for group, relations in groups.items():
++                    name = f"{group}_s{seed}"
++                    source_mask = visible_support_source_mask(base) if group in SOURCE_SELECTIONS else None
++                    evidence = rewire_and_validate_batch(base, seed, 1.0, policy, relations, CYCLE_MODES.get(group), source_mask)
++                    if evidence["errors"] or evidence["temporal"]["unknown"]:
++                        raise ValueError(f"{name}: {evidence['errors']}")
++                    selected = np.isin(base["f2p_rel_idxs"], relations)
++                    changed = evidence["batch"]["f2p_nbr_idxs"] != base["f2p_nbr_idxs"]
++                    compared = changed if group in CYCLE_MODES else selected
++                    if group not in SOURCE_SELECTIONS and not np.array_equal(evidence["batch"]["f2p_nbr_idxs"][compared],
++                                          full["batch"]["f2p_nbr_idxs"][compared]):
++                        raise ValueError("targeted assignment differs from all-relations matching")
++                    attach_availability(evidence["exposure"], counts)
++                    evidence_batches[name].append(evidence["exposure"])
++        for key in ("target_node_idxs", "labels", "batch_fingerprints"):
++            if report[key] != reference["validation"][key]:
++                raise ValueError(f"{key} differs from the original validated panel")
++        for name, batches in evidence_batches.items():
++            exposure = write_exposure_npz(directory / f"validation_exposure_{name}.npz", batches)
++            report["arms"][name] = {"totals": {key: int(exposure[key].sum()) for key in EDGE_FIELDS},
++                                   "unchanged_queries": int((exposure["changed_edges"] == 0).sum())}
++        report.update(status="passed", complete=True)
++    except Exception as error:
++        report.update(status="failed", errors=[f"{type(error).__name__}: {error}"])
++        raise
++    finally:
++        save_json(directory / "validation.json", report)
++    return report
++
++
++def run_controls(evaluators, pre_dir, checkpoint_dir, reference_root, out, *, dry_run=False, group_names=None):
++    """Pair new controls with existing clean/full evidence; never overwrite it."""
++    analyze_matrix(reference_root)
++    out.mkdir(exist_ok=False)
++    registry = load_relation_index(pre_dir, "rel-f1")
++    policy = load_availability_policy(pre_dir)
++    groups = relation_groups(registry)
++    groups.update({name: groups["task_driver"] for name in CYCLE_MODES})
++    groups.update({name: groups["task_driver"] for name in SOURCE_SELECTIONS})
++    if group_names is not None:
++        if not group_names or len(set(group_names)) != len(group_names) or not set(group_names).issubset(groups):
++            raise ValueError("groups must be unique known relation controls")
++        groups = {name: groups[name] for name in group_names}
++    status = {"status": "in_progress", "complete": False, "evidence_kind": "exploratory_relation_controls",
++              "reference": str(reference_root.resolve()), "groups": groups, "seeds": list(SEEDS),
++              "policy": policy, "cycle_modes": {name: CYCLE_MODES.get(name) for name in groups},
++              "source_selection": {name: SOURCE_SELECTIONS.get(name) for name in groups},
++              "matching_rule": "source-selected controls rematch within their selected pool; others restrict full assignment",
++              "contexts": {},
++              "provenance": {"source": source_identity(Path(__file__).resolve().parents[1]),
++                             "software": software_versions(), "preprocessing": preprocessing_identity(pre_dir, "rel-f1")}}
++    try:
++        references, validated = {}, {}
++        for ctx, ev in evaluators.items():
++            directory = out / f"ctx{ctx}_lctx{ctx // 2}"
++            directory.mkdir()
++            reference = json.loads((reference_root / directory.name / "manifest.json").read_text())
++            if reference["validation"]["availability_policy"] != json.loads((reference_root / "matrix.json").read_text())["availability_policy"]:
++                raise ValueError("reference availability policies differ")
++            # Curated policies omit local file paths; compare scientific ranges/rules.
++            if any(policy[key] != reference["validation"]["availability_policy"][key]
++                   for key in ("version", "tables", "cutoff_rule", "timeless_rule", "fanout_rule", "refill_removed_cells")):
++                raise ValueError("new availability policy differs from reference")
++            expected = load_expected_target_ids(pre_dir, ev.tasks[0], 702)
++            if not np.array_equal(np.sort(reference["validation"]["target_node_idxs"]), expected):
++                raise ValueError("reference target set differs from dataset")
++            references[ctx] = reference
++            validated[ctx] = validate_groups(ev, groups, policy, reference, directory)
++            status["contexts"][str(ctx)] = {"status": "validated"}
++        if dry_run:
++            status.update(status="validated", complete=True)
++            return status
++        for ctx, ev in evaluators.items():
++            directory = out / f"ctx{ctx}_lctx{ctx // 2}"
++            reference_directory = reference_root / directory.name
++            reference = references[ctx]
++            started = time.time()
++            model, identity = load_frozen_model(checkpoint_dir, "cuda")
++            if any(identity[key]["sha256"] != reference["checkpoint_provenance"][key]["sha256"]
++                   for key in ("weights", "config")):
++                raise ValueError("checkpoint differs from cached clean/full reference")
++            cache = read_predictions(reference_directory / "preds_base.npz")
++            holder = SimpleNamespace(batch=None, batch_index=0, forward_calls=0,
++                                     fingerprints=validated[ctx]["batch_fingerprints"], availability_policy=policy)
++            capture_evaluator_masks(ev, holder)
++            wrappers = [("base", CachedClean(model, holder, cache))]
++            reused = {}
++            for group, relations in groups.items():
++                for seed in SEEDS:
++                    name = f"{group}_s{seed}"
++                    if validated[ctx]["arms"][name]["totals"]["changed_edges"] == 0:
++                        reused[name] = "base"  # Sparse/no-change control needs no forward.
++                    else:
++                        wrappers.append((name, RewireWrap(model, seed, 1.0, holder, 8, relations, CYCLE_MODES.get(group), SOURCE_SELECTIONS.get(group))))
++            import torch
++
++            with torch.inference_mode():
++                outputs = list(ev.evaluate_raw([(wrapper, name) for name, wrapper in wrappers], [ctx], with_node_idxs=True))
++            if len(outputs) != 1:
++                raise ValueError("expected exactly one context/task output")
++            _, _, labels, scores, _, ids = outputs[0]
++            if not np.array_equal(ids, cache["node_idxs"]) or not np.array_equal(labels, cache["labels"]):
++                raise ValueError("new controls differ in cached target/label pairing")
++            if holder.batch_index != len(holder.fingerprints):
++                raise ValueError("inference omitted a validated sampled batch")
++            manifest = {"status": "in_progress", "complete": False, "ctx": ctx,
++                        "checkpoint": identity, "relation_index": registry, "arms": {},
++                        "reference_clean": file_identity(reference_directory / "preds_base.npz")}
++            for name, wrapper in wrappers:
++                if name == "base":
++                    continue
++                arrays = write_exposure_npz(directory / f"exposure_{name}.npz", wrapper.exposure_batches)
++                with np.load(directory / f"validation_exposure_{name}.npz") as checked:
++                    if set(checked.files) != set(arrays) or any(not np.array_equal(checked[key], arrays[key], equal_nan=True) for key in checked.files):
++                        raise ValueError("relation control exposure differs from validation")
++            for group in groups:
++                for seed in SEEDS:
++                    name = f"{group}_s{seed}"
++                    prediction = cache["preds"] if name in reused else np.asarray(scores[name], dtype=float)
++                    if prediction.shape != (702,) or not np.isfinite(prediction).all():
++                        raise ValueError("invalid relation-control scores")
++                    path = directory / f"preds_{name}.npz"
++                    with path.open("xb") as handle:
++                        np.savez(handle, labels=labels, preds=prediction, node_idxs=ids)
++                    manifest["arms"][name] = {"auroc": binary_auroc(labels, prediction),
++                                              "predictions": path.name, "prediction_sha256": file_identity(path)["sha256"],
++                                              "exposure": f"validation_exposure_{name}.npz",
++                                              "exposure_sha256": file_identity(directory / f"validation_exposure_{name}.npz")["sha256"],
++                                              "reused_clean_no_changes": name in reused,
++                                              **validated[ctx]["arms"][name]}
++            manifest.update(status="complete", complete=True, elapsed_sec=time.time() - started,
++                            model_forward_attempts=holder.forward_calls)
++            save_json(directory / "manifest.json", manifest)
++            status["contexts"][str(ctx)] = {"status": "complete", "elapsed_sec": manifest["elapsed_sec"]}
++            del model, wrappers
++        status.update(status="complete", complete=True)
++    except Exception as error:
++        status.update(status="failed", complete=False, errors=[f"{type(error).__name__}: {error}"])
++        raise
++    finally:
++        save_json(out / "controls.json", status)
++    return status
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--pre-dir", type=Path, required=True)
++    parser.add_argument("--checkpoint-dir", type=Path, required=True)
++    parser.add_argument("--reference", type=Path, default=Path("results/preliminary/2026-10-05_validated"))
++    parser.add_argument("--dry-run", action="store_true")
++    parser.add_argument("--groups", default="task_driver,database_all,database_driver,database_constructor,database_race,race_circuit")
++    args = parser.parse_args()
++    from rt.eval_utils import build_evaluator
++
++    tasks = build_tasks(str(args.pre_dir))
++    evaluators = {ctx: build_evaluator(tasks, str(args.pre_dir), embedding_model="all-MiniLM-L12-v2", d_text=384,
++                                      device="cpu" if args.dry_run else "cuda", ctx_size=ctx, local_ctx_size=ctx // 2,
++                                      items_per_task=702, num_workers=0, context_seed=0, shuffle_seed=0)
++                  for ctx in (48, 128)}
++    out = Path("results/runs") / f"relation_controls_{time.time_ns()}"
++    run_controls(evaluators, args.pre_dir, args.checkpoint_dir, args.reference, out,
++                 dry_run=args.dry_run, group_names=args.groups.split(","))
++    print(out)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/src/rfm_structure/exploratory.py b/src/rfm_structure/exploratory.py
+new file mode 100644
+--- /dev/null
++++ b/src/rfm_structure/exploratory.py
+@@ -0,0 +1,107 @@
++"""Paired panel sensitivity checks, explicitly exploratory and non-causal."""
++import numpy as np
++from sklearn.linear_model import Ridge
++from sklearn.metrics import mean_absolute_error, r2_score, roc_auc_score
++from sklearn.model_selection import GroupKFold
++from sklearn.pipeline import make_pipeline
++from sklearn.preprocessing import StandardScaler
++
++
++def rank_credit(labels, scores):
++    """AUROC's positive/negative pair credits, including half-credit ties."""
++    labels = np.asarray(labels) > 0
++    scores = np.asarray(scores, dtype=float)
++    if scores.shape != labels.shape or not np.isfinite(scores).all() or labels.all() or not labels.any():
++        raise ValueError("rank credits require finite paired scores and both classes")
++    difference = scores[labels, None] - scores[None, ~labels]
++    return (difference > 0).astype(float) + 0.5 * (difference == 0)
++
++
++def clustered_auc_delta(labels, clean, arms, dates, drivers, *, replicates=2000, seed=20261006):
++    """Paired percentile sensitivity intervals conditional on saved matching seeds.
++
++    Resample dates, drivers, and crossed date×driver weights separately. Crossed
++    resampling multiplies independent cluster multiplicities (a pigeonhole-style
++    sensitivity check). It does not prove coverage under temporal dependence,
++    multiplicity, or unseen tasks. The same weights are used in every arm.
++    """
++    labels = np.asarray(labels) > 0
++    arms = np.asarray(arms)
++    if replicates < 1:
++        raise ValueError("bootstrap replicate count must be positive")
++    if arms.ndim != 2 or arms.shape[1] != len(labels) or len(arms) == 0:
++        raise ValueError("arms must be seed-by-query arrays")
++    clean = np.asarray(clean)
++    references = clean[None, :] if clean.ndim == 1 else clean
++    if references.ndim != 2 or references.shape[1] != len(labels):
++        raise ValueError("clean references must be query or seed-by-query arrays")
++    delta = np.mean([rank_credit(labels, arm) for arm in arms], axis=0) - np.mean(
++        [rank_credit(labels, reference) for reference in references], axis=0
++    )
++    result = {"point": float(delta.mean()), "replicates": replicates}
++    codes = {}
++    counts = {}
++    rng = np.random.default_rng(seed)
++    for name, groups in (("date", dates), ("driver", drivers)):
++        groups = np.asarray(groups)
++        if groups.shape != labels.shape:
++            raise ValueError("clusters must have one entry per query")
++        unique, codes[name] = np.unique(groups, return_inverse=True)
++        counts[name] = rng.multinomial(len(unique), np.ones(len(unique)) / len(unique), size=replicates)
++    weights = {name: counts[name][:, codes[name]] for name in codes}
++    weights["crossed"] = weights["date"] * weights["driver"]
++    for name, weight in weights.items():
++        if name in codes and len(np.unique(codes[name])) < 2:
++            result[f"{name}_percentile_95"] = None
++            result[f"{name}_defined_replicates"] = 0
++            result[f"{name}_status"] = "single_cluster_not_estimable"
++            continue
++        numerator = np.sum((weight[:, labels] @ delta) * weight[:, ~labels], axis=1)
++        denominator = weight[:, labels].sum(axis=1) * weight[:, ~labels].sum(axis=1)
++        defined = denominator > 0
++        estimates = numerator[defined] / denominator[defined]
++        result[f"{name}_percentile_95"] = np.quantile(estimates, [0.025, 0.975]).tolist()
++        result[f"{name}_defined_replicates"] = int(defined.sum())
++    result["crossed_status"] = ("two_axes" if all(len(np.unique(code)) >= 2 for code in codes.values())
++                                else "only_one_varying_cluster_axis")
++    for name, groups in (("date", np.asarray(dates)), ("driver", np.asarray(drivers))):
++        estimates = []
++        for group in np.unique(groups):
++            kept = groups != group
++            if len(np.unique(labels[kept])) < 2:
++                continue
++            estimates.append(float(np.mean([roc_auc_score(labels[kept], arm[kept]) for arm in arms])
++                                   - np.mean([roc_auc_score(labels[kept], reference[kept]) for reference in references])))
++        result[f"leave_one_{name}_range"] = [min(estimates), max(estimates)] if estimates else None
++    return result
++
++
++def grouped_sensitivity_prediction(features, sensitivity, groups, *, folds=5):
++    """Fixed ridge model evaluated out-of-fold by date or driver, not by row.
++
++    Scaling fits within each training fold. Return out-of-fold R² and error on
++    log1p(mean absolute paired score change), not outcome prediction performance
++    or causal attribution. No test-fold tuning or significance calculation.
++    """
++    features = np.asarray(features, dtype=float)
++    response = np.log1p(np.asarray(sensitivity, dtype=float))
++    groups = np.asarray(groups)
++    if features.shape[0] != len(response) or groups.shape != response.shape or not np.isfinite(features).all():
++        raise ValueError("features, sensitivity and clusters must be aligned")
++    if np.any(response < 0) or not np.isfinite(response).all():
++        raise ValueError("sensitivity must be finite and nonnegative")
++    if len(np.unique(groups)) < 2:
++        raise ValueError("grouped evaluation needs at least two distinct clusters")
++    splitter = GroupKFold(n_splits=min(folds, len(np.unique(groups))))
++    predicted = np.empty(len(response))
++    mean_baseline = np.empty(len(response))
++    for train, test in splitter.split(features, response, groups):
++        model = make_pipeline(StandardScaler(), Ridge(alpha=10.0))
++        model.fit(features[train], response[train])
++        predicted[test] = model.predict(features[test])
++        mean_baseline[test] = response[train].mean()
++    return {"out_of_fold_r2": float(r2_score(response, predicted)),
++            "mean_absolute_log_error": float(mean_absolute_error(response, predicted)),
++            "training_mean_baseline_r2": float(r2_score(response, mean_baseline)),
++            "n_records": len(response), "n_clusters": len(np.unique(groups)),
++            "response": "log1p(seed-mean absolute raw-score shift)", "ridge_alpha": 10.0}
+diff --git a/src/rfm_structure/relation_controls.py b/src/rfm_structure/relation_controls.py
+new file mode 100644
+--- /dev/null
++++ b/src/rfm_structure/relation_controls.py
+@@ -0,0 +1,29 @@
++"""Scientifically defined FK groups for paired within-context controls."""
++
++
++def relation_groups(registry):
++    """Separate task-row links and ordinary database incidence by schema meaning.
++
++    Groups overlap deliberately: database_all is the aggregate control, while
++    its driver/constructor/race/circuit subsets identify different mechanisms.
++    Sparse individual columns are pooled by parent type; counts remain explicit.
++    """
++    database_tables = {
++        "results", "qualifying", "standings", "constructor_results",
++        "constructor_standings", "races", "drivers", "constructors", "circuits",
++    }
++    predicates = {
++        "task_driver": lambda r: r["child_table"] == "driver-dnf" and r["parent_table"] == "drivers",
++        "database_all": lambda r: r["child_table"] in database_tables,
++        "database_driver": lambda r: r["child_table"] in database_tables and r["parent_table"] == "drivers",
++        "database_constructor": lambda r: r["child_table"] in database_tables and r["parent_table"] == "constructors",
++        "database_race": lambda r: r["child_table"] in database_tables and r["parent_table"] == "races",
++        "race_circuit": lambda r: r["child_table"] == "races" and r["parent_table"] == "circuits",
++    }
++    groups = {name: sorted(int(key) for key, info in registry.items() if predicate(info))
++              for name, predicate in predicates.items()}
++    if any(not ids for ids in groups.values()):
++        raise ValueError("rel-f1 metadata lacks one of the declared relation groups")
++    if set(groups["task_driver"]) & set(groups["database_all"]):
++        raise ValueError("task and database relation controls must be disjoint")
++    return groups
+diff --git a/src/rfm_structure/replication.py b/src/rfm_structure/replication.py
+new file mode 100644
+--- /dev/null
++++ b/src/rfm_structure/replication.py
+@@ -0,0 +1,104 @@
++"""Frozen small panels for metadata-driven cross-database replication."""
++import json
++from pathlib import Path
++
++import numpy as np
++
++from .provenance import file_identity
++from .validation import numpy_batch
++
++MINILM_REVISION = "a50ef00143b4d5391434df20ae11632588ac25be"
++MINILM_WEIGHTS_SHA256 = "d2d541e5f101695ae495eacd867a8d025ecfe8f9674fb23aa6cf93cdb60a5542"
++
++
++def validate_embedding_scope(pre_dir, database, scope):
++    """Authenticate scoped vectors at the current path, not a saved local path.
++
++    Encoder metadata binds the claimed preparation protocol; the file digest
++    binds its output. Neither finiteness nor context coverage proves provenance.
++    Ordinary fully encoded artifacts without a scope remain supported.
++    """
++    if scope is None:
++        return
++    if (scope.get("status") != "complete"
++            or scope.get("encoder_revision") != MINILM_REVISION
++            or scope.get("encoder_dtype") != "float32"
++            or scope.get("stored_dtype") != "bfloat16"
++            or scope.get("encoder_weights", {}).get("sha256") != MINILM_WEIGHTS_SHA256):
++        raise ValueError("scoped embedding encoder provenance differs from pinned MiniLM FP32/BF16 protocol")
++    actual = file_identity(Path(pre_dir) / database / "text_emb_all-MiniLM-L12-v2.bin")
++    expected = scope.get("embedding_file", {})
++    if any(actual[key] != expected.get(key) for key in ("bytes", "sha256")):
++        raise ValueError("scoped embedding file identity differs from coverage manifest")
++
++
++def selected_query_ids(pre_dir, task, count=512, seed=20261007):
++    """Uniformly select official test rows before inspecting labels or scores."""
++    tables = json.loads((Path(pre_dir) / task.db_name / "table_info.json").read_text())
++    info = tables[f"{task.table_name}:Test"]
++    if count < 2 or count > info["num_nodes"]:
++        raise ValueError("replication count must fit the official test split")
++    chosen = np.random.default_rng(np.random.PCG64(seed)).choice(info["num_nodes"], count, replace=False)
++    return chosen.astype(np.int64) + info["node_idx_offset"]
++
++
++def replication_groups(registry, task_name, entity_table, database_tables):
++    """Select task/entity and ordinary-DB relations from schema metadata."""
++    groups = {
++        "task_entity": sorted(int(r) for r, m in registry.items()
++                              if m["child_table"] == task_name and m["parent_table"] == entity_table),
++        "database": sorted(int(r) for r, m in registry.items() if m["child_table"] in database_tables),
++    }
++    if any(not ids for ids in groups.values()) or set(groups["task_entity"]) & set(groups["database"]):
++        raise ValueError("replication requires nonempty disjoint task/entity and DB relations")
++    return groups
++
++
++class SelectedContextLoader:
++    """Replay explicitly chosen target nodes, with no label-dependent selection.
++
++    Rustler's explicit-node sampler uses the same per-node context seed and
++    graph policy as ordinary evaluation. A retry yielding a different target
++    fails here. The evaluator sees one batch of selected real queries.
++    """
++
++    def __init__(self, rustler_dataset, query_ids, ctx):
++        self.rustler_dataset = rustler_dataset
++        self.query_ids = np.asarray(query_ids, dtype=np.int64)
++        self.ctx = ctx
++        self.dataset = self
++
++    def __len__(self):
++        return 1
++
++    def __iter__(self):
++        native = self.rustler_dataset.sampler.batch_for_nodes_py(self.query_ids.tolist(), 0, self.ctx)
++        batch = self.rustler_dataset._process_batch(native)
++        arrays = numpy_batch(batch)
++        ids = (arrays["node_idxs"] * arrays["is_targets"]).sum(axis=1)
++        if not np.array_equal(ids, self.query_ids) or not arrays["batch_mask"].all():
++            raise ValueError("explicit-node sampler did not return exactly the frozen selected queries")
++        yield batch
++
++
++def replication_evaluator(pre_dir, task, query_ids, ctx, device="cpu", *, allow_marker_embeddings=False):
++    """Build the existing RT evaluator, then replace only target selection."""
++    from rt.eval_utils import build_evaluator
++
++    scope_file = Path(pre_dir) / task.db_name / "embedding_scope.json"
++    if scope_file.exists() and not allow_marker_embeddings:
++        scope = json.loads(scope_file.read_text())
++        if scope["status"] != "complete" or scope["query_ids"] != np.asarray(query_ids).tolist() or str(ctx) not in scope["context_fingerprints"]:
++            raise ValueError("embedding coverage does not match the frozen replication panel")
++        validate_embedding_scope(pre_dir, task.db_name, scope)
++    ev = build_evaluator([task], str(pre_dir), embedding_model="all-MiniLM-L12-v2", d_text=384,
++                         device=device, ctx_size=ctx, local_ctx_size=ctx // 2,
++                         items_per_task=len(query_ids), num_workers=0, context_seed=0, shuffle_seed=0,
++                         mmap_populate=False)
++    dataset = ev.eval_loaders[task].dataset.rustler_dataset
++    loader = SelectedContextLoader(dataset, query_ids, ctx)
++    ev.eval_bs = len(query_ids)
++    ev.items_per_task = None
++    ev.eval_loaders = {task: loader}
++    ev.eval_loader_iters = {task: iter(loader)}
++    return ev
+diff --git a/tests/test_exploratory.py b/tests/test_exploratory.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_exploratory.py
+@@ -0,0 +1,39 @@
++import numpy as np
++import pytest
++from sklearn.metrics import roc_auc_score
++
++from rfm_structure.exploratory import (
++    clustered_auc_delta,
++    grouped_sensitivity_prediction,
++    rank_credit,
++)
++
++
++def test_pair_credit_and_bootstrap_point_match_paired_auroc_with_ties():
++    labels = np.array([0, 1, 0, 1, 0, 1])
++    clean = np.array([0, 1, 1, 1, 0, 2])
++    arms = np.array([clean[::-1], clean + np.array([1, 0, 1, 0, 0, 0])])
++    assert rank_credit(labels, clean).mean() == pytest.approx(roc_auc_score(labels, clean))
++    result = clustered_auc_delta(labels, clean, arms, [0, 0, 1, 1, 2, 2], [0, 1, 0, 1, 0, 1], replicates=100)
++    expected = np.mean([roc_auc_score(labels, arm) for arm in arms]) - roc_auc_score(labels, clean)
++    assert result["point"] == pytest.approx(expected)
++    assert result == clustered_auc_delta(labels, clean, arms, [0, 0, 1, 1, 2, 2], [0, 1, 0, 1, 0, 1], replicates=100)
++
++
++def test_paired_identity_has_zero_intervals_under_every_resampling_scheme():
++    labels = np.tile([0, 1], 10)
++    scores = np.arange(20)
++    result = clustered_auc_delta(labels, scores, scores[None, :], np.repeat(np.arange(10), 2),
++                                 np.tile([0, 1], 10), replicates=100)
++    for name in ("date", "driver", "crossed"):
++        assert result[f"{name}_percentile_95"] == [0, 0]
++
++
++def test_grouped_prediction_is_deterministic_and_generalizes_a_simple_signal():
++    x = np.linspace(0, 1, 100)
++    sensitivity = np.expm1(x)
++    groups = np.repeat(np.arange(10), 10)
++    result = grouped_sensitivity_prediction(x[:, None], sensitivity, groups)
++    assert result == grouped_sensitivity_prediction(x[:, None], sensitivity, groups)
++    assert result["out_of_fold_r2"] > 0.9
++    assert result["n_clusters"] == 10
+diff --git a/tests/test_final_artifacts.py b/tests/test_final_artifacts.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_final_artifacts.py
+@@ -0,0 +1,59 @@
++"""Portable follow-up evidence must reproduce without RT, raw data or weights."""
++import json
++import runpy
++from pathlib import Path
++
++import numpy as np
++import pytest
++
++ROOT = Path(__file__).parents[1]
++RELEASE = ROOT / "results/final/2026-10-19"
++ANALYSIS = runpy.run_path(str(ROOT / "experiments/analyze_final_results.py"))
++CURATION = runpy.run_path(str(ROOT / "experiments/curate_final_results.py"))
++
++
++def test_final_evidence_reproduces_all_metrics_and_support_contrasts():
++    result = ANALYSIS["analyze"](RELEASE)
++    recorded = json.loads((RELEASE / "recalculated/analysis.json").read_text())
++    assert result == recorded
++    assert result["prediction_files"] == 110
++    assert len(result["checkpoint_hashes"]) == 2
++
++
++def test_integrity_check_rejects_missing_or_changed_artifacts(tmp_path):
++    (tmp_path / "checksums.json").write_text(json.dumps({"sample": {"bytes": 3, "sha256": "wrong"}}))
++    with pytest.raises(ValueError, match="missing artifact"):
++        ANALYSIS["verify_checksums"](tmp_path)
++    (tmp_path / "sample").write_text("bad")
++    with pytest.raises(ValueError, match="checksum mismatch"):
++        ANALYSIS["verify_checksums"](tmp_path)
++
++
++def test_lossless_curation_preserves_nan_dtype_and_original_identity(tmp_path):
++    source, dest = tmp_path / "original.npz", tmp_path / "curated.npz"
++    np.savez(source, values=np.array([1, np.nan], dtype=np.float32), ids=np.array([2, 3], dtype=np.int64))
++    identity = CURATION["file_identity"](source)
++    original, curated = CURATION["compress"](source, dest, identity["sha256"])
++    assert original == identity
++    assert curated["sha256"] == CURATION["file_identity"](dest)["sha256"]
++    with pytest.raises(ValueError, match="original checksum mismatch"):
++        CURATION["compress"](source, dest, "incorrect")
++
++
++def test_portable_metadata_removes_machine_paths_but_preserves_hashes():
++    assert CURATION["portable"]({"file": {"path": "/machine/data/nodes.rkyv", "sha256": "abc"}}) == {
++        "file": {"path": "nodes.rkyv", "sha256": "abc"}}
++
++
++def test_independent_support_classifier_counts_source_slots_not_repeated_cells(monkeypatch):
++    from test_visible_support import fixture
++
++    monkeypatch.syspath_prepend(str(ROOT / "experiments"))
++    classifier = runpy.run_path(str(ROOT / "experiments/audit_support_links.py"))["classify_links"]
++    base = fixture()
++    rewired = base["f2p_nbr_idxs"].copy()
++    rewired[0, 1:5, 0] = [203, 203, 202, 202]
++    result, = classifier(base, rewired, 7)
++    assert result["eligible"] == {"query": 1, "visible_label": 2, "hidden_label": 2}
++    assert result["changed"] == {"query": 0, "visible_label": 2, "hidden_label": 0}
++    assert result["visible_pool_distinct_parents"] == 2
+diff --git a/tests/test_native_temporal.py b/tests/test_native_temporal.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_native_temporal.py
+@@ -0,0 +1,50 @@
++"""Small native regression: temporal entity tables need not have outgoing FKs."""
++import json
++
++import numpy as np
++import pytest
++
++
++def test_native_preprocessor_preserves_time_on_entity_without_foreign_keys(tmp_path):
++    pd = pytest.importorskip("pandas")
++    native = pytest.importorskip("rt._rustler")
++    from rt.eval_utils import build_evaluator
++    from rt.tasks import tasks_from_preprocessed
++
++    raw = tmp_path / "raw"
++    (raw / "db").mkdir(parents=True)
++    (raw / "tasks/forecast").mkdir(parents=True)
++    (raw / "manifest.yaml").write_text(json.dumps({
++        "name": "temporal-entity-fixture", "manifest_version": 1,
++        "val_timestamp": "2005-01-01", "test_timestamp": "2010-01-01",
++        "tables": {"entities": {"pkey": "id", "time_col": "created", "fkeys": {}}},
++    }))
++    pd.DataFrame({"id": [0, 1], "created": pd.to_datetime(["2000-01-01", "2001-01-01"]),
++                  "feature": [1.0, 2.0]}).to_parquet(raw / "db/entities.parquet", index=False)
++    (raw / "tasks/forecast/manifest.yaml").write_text(json.dumps({
++        "name": "forecast", "kind": "forecast", "task_type": "binary_classification",
++        "entity_table": "entities", "entity_col": "entity", "target_col": "label",
++        "time_col": "timestamp", "timedelta": "30 days", "manifest_version": 1,
++    }))
++    pd.DataFrame({"timestamp": pd.to_datetime(["2010-01-01", "2010-01-01"]),
++                  "entity": [0, 1], "label": [0, 1]}).to_parquet(raw / "tasks/forecast/test.parquet", index=False)
++    pd.DataFrame({"timestamp": pd.to_datetime(["2004-01-01", "2004-01-01"]),
++                  "entity": [0, 1], "label": [0, 1]}).to_parquet(raw / "tasks/forecast/train.parquet", index=False)
++    out = tmp_path / "pre"
++    native.preprocess(str(raw), str(out), source=str(raw), skip_tasks=False)
++    directory = out / "temporal-entity-fixture"
++    meta = json.loads((directory / "meta.json").read_text())
++    np.zeros((meta["num_text_strings"], 384), dtype=np.uint16).tofile(directory / "text_emb_all-MiniLM-L12-v2.bin")
++    tasks = tasks_from_preprocessed(str(out), splits=("test",), dbs=[meta["name"]])
++    ev = build_evaluator(tasks, str(out), embedding_model="all-MiniLM-L12-v2", d_text=384,
++                         device="cpu", ctx_size=16, local_ctx_size=8, items_per_task=2,
++                         num_workers=0, num_walks=0, mmap_populate=False, tokens_per_gpu=32)
++    batch = next(iter(ev.eval_loaders[tasks[0]]))
++    info = json.loads((directory / "table_info.json").read_text())["entities:Db"]
++    present = ~batch["is_padding"].numpy()
++    nodes = batch["node_idxs"].numpy()
++    times = batch["timestamps"].numpy()
++    for row, date in enumerate(("2000-01-01", "2001-01-01")):
++        positions = present & (nodes == info["node_idx_offset"] + row)
++        assert positions.any(), "fixture must actually sample the entity row"
++        assert np.all(times[positions] == int(pd.Timestamp(date).timestamp()))
+diff --git a/tests/test_relation_controls.py b/tests/test_relation_controls.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_relation_controls.py
+@@ -0,0 +1,114 @@
++import runpy
++from pathlib import Path
++from types import SimpleNamespace
++
++import numpy as np
++import pytest
++from experiment_fixtures import cycle_fixture, make_batch
++
++from rfm_structure.relation_controls import relation_groups
++from rfm_structure.rewiring import assert_structural_invariants, rewire_f2p_nbr
++from rfm_structure.validation import real_query_batch, rewire_and_validate_batch
++
++
++@pytest.mark.parametrize("seed", [101, 202, 303])
++def test_targeting_keeps_assignment_stream_and_non_target_relations_fixed(seed):
++    nbr, rel, nodes, padding = cycle_fixture()
++    nbr = np.repeat(nbr, 2, axis=2)
++    rel = np.repeat(rel, 2, axis=2)
++    rel[:, :6, 1] = 8
++    full = rewire_f2p_nbr(nbr, rel, nodes, padding, seed)
++    targeted = rewire_f2p_nbr(nbr, rel, nodes, padding, seed, relation_ids=[8])
++    np.testing.assert_array_equal(targeted[:, :, 0], nbr[:, :, 0])
++    np.testing.assert_array_equal(targeted[:, :, 1], full[:, :, 1])
++    assert not assert_structural_invariants(nbr, targeted, rel, nodes, padding, enforce_fanout=False)
++    np.testing.assert_array_equal(targeted, rewire_f2p_nbr(nbr, rel, nodes, padding, seed, relation_ids=[8]))
++    np.testing.assert_array_equal(nbr, rewire_f2p_nbr(nbr, rel, nodes, padding, seed, relation_ids=[]))
++
++
++def test_targeted_exposure_accounts_all_eligible_but_only_targeted_maximum():
++    raw = make_batch([0])
++    base, _ = real_query_batch(raw)
++    evidence = rewire_and_validate_batch(base, 101, relation_ids=[])
++    assert evidence["totals"]["eligible_edges"] == 1
++    assert evidence["totals"]["changed_edges"] == 0
++    assert evidence["totals"]["max_changed_edges"] == 0
++    assert not evidence["errors"]
++
++
++def test_groups_use_relation_semantics_not_numeric_slot_positions():
++    registry = {
++        42: {"child_table": "driver-dnf", "parent_table": "drivers"},
++        10: {"child_table": "results", "parent_table": "drivers"},
++        11: {"child_table": "results", "parent_table": "constructors"},
++        12: {"child_table": "results", "parent_table": "races"},
++        13: {"child_table": "races", "parent_table": "circuits"},
++    }
++    groups = relation_groups(registry)
++    assert groups["task_driver"] == [42]
++    assert groups["database_all"] == [10, 11, 12, 13]
++    assert groups["database_driver"] == [10]
++    assert groups["race_circuit"] == [13]
++
++
++def test_relation_wrapper_runs_targeted_parents_and_keeps_others_clean():
++    from experiment_fixtures import FakeModel, runner_functions
++
++    from rfm_structure.validation import batch_fingerprint
++
++    functions = runner_functions()
++    raw = make_batch([0])
++    raw["node_idxs"][0, :12] = np.arange(12)
++    raw["is_padding"][0, :12] = False
++    raw["timestamps"][0, :12] = 5
++    raw["timestamps"][0, 0] = 10
++    raw["f2p_nbr_idxs"][0, :6, 0] = np.arange(6, 12)
++    raw["f2p_rel_idxs"][0, :6, 0] = [7, 7, 7, 8, 8, 8]
++    real, _ = real_query_batch(raw)
++    holder = SimpleNamespace(batch_mask=raw.pop("batch_mask"), batch=None, batch_index=0,
++                             forward_calls=0, fingerprints=[batch_fingerprint(real)])
++
++    class InspectingModel(FakeModel):
++        def predict(self, batch, *args):
++            if self.calls:
++                np.testing.assert_array_equal(batch["f2p_nbr_idxs"][0, :3, 0], np.arange(6, 9))
++                assert np.any(batch["f2p_nbr_idxs"][0, 3:6, 0] != np.arange(9, 12))
++            return super().predict(batch, *args)
++
++    model = InspectingModel()
++    functions["BaseWrap"](model, holder, 101, 8).predict(raw, [48], "cpu", None, True)
++    wrapper = functions["RewireWrap"](model, 101, 1, holder, 8, [8])
++    wrapper.predict(raw, [48], "cpu", None, True)
++    assert wrapper.stats["changed_edges"] == wrapper.stats["max_changed_edges"] == 3
++
++
++def test_cached_clean_predictions_require_no_model_forward(monkeypatch):
++    from rfm_structure.validation import batch_fingerprint
++
++    monkeypatch.syspath_prepend(str(Path(__file__).parents[1] / "experiments"))
++    functions = runpy.run_path(str(Path(__file__).parents[1] / "experiments/run_relation_controls.py"))
++    raw = make_batch([0, 1], slots=3)
++    real, _ = real_query_batch(raw)
++    holder = SimpleNamespace(batch_mask=raw.pop("batch_mask"), batch=None, batch_index=0,
++                             forward_calls=0, fingerprints=[batch_fingerprint(real)])
++    cache = {"node_idxs": np.array([1, 0]), "preds": np.array([0.4, 0.2])}
++    wrapper = functions["CachedClean"](None, holder, cache)
++    scores = wrapper.predict(raw, [48], "cpu", None, True)[48]
++    np.testing.assert_allclose(scores.numpy(), [0.2, 0.4, 0])
++    assert holder.forward_calls == 0
++
++
++@pytest.mark.parametrize("seed", [101, 202, 303])
++def test_query_cycle_partition_is_disjoint_and_reconstructs_full_matching(seed):
++    nbr, rel, nodes, padding = cycle_fixture(repeat=2)
++    full = rewire_f2p_nbr(nbr, rel, nodes, padding, seed)
++    query = rewire_f2p_nbr(nbr, rel, nodes, padding, seed,
++                           cycle_mode="touching_query", query_node_ids=np.array([0]))
++    other = rewire_f2p_nbr(nbr, rel, nodes, padding, seed,
++                           cycle_mode="excluding_query", query_node_ids=np.array([0]))
++    assert not np.any((query != nbr) & (other != nbr))
++    np.testing.assert_array_equal(np.where(query != nbr, query, other), full)
++    np.testing.assert_array_equal(other[:, :2], nbr[:, :2])
++    np.testing.assert_array_equal(query[:, :2], full[:, :2])
++    for output in (query, other):
++        assert not assert_structural_invariants(nbr, output, rel, nodes, padding, enforce_fanout=False)
+diff --git a/tests/test_replication.py b/tests/test_replication.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_replication.py
+@@ -0,0 +1,159 @@
++import json
++import runpy
++from pathlib import Path
++from types import SimpleNamespace
++
++import numpy as np
++import pytest
++from experiment_fixtures import make_batch
++
++from rfm_structure.exploratory import clustered_auc_delta
++from rfm_structure.replication import (
++    MINILM_REVISION,
++    MINILM_WEIGHTS_SHA256,
++    SelectedContextLoader,
++    replication_groups,
++    selected_query_ids,
++    validate_embedding_scope,
++)
++
++
++def test_frozen_selection_is_unique_deterministic_and_independent_of_labels(tmp_path):
++    directory = tmp_path / "example"
++    directory.mkdir()
++    (directory / "table_info.json").write_text(json.dumps({"forecast:Test": {"num_nodes": 1000, "node_idx_offset": 7000}}))
++    task = SimpleNamespace(db_name="example", table_name="forecast")
++    ids = selected_query_ids(tmp_path, task)
++    np.testing.assert_array_equal(ids, selected_query_ids(tmp_path, task))
++    assert len(set(ids)) == 512
++    assert ids.min() >= 7000 and ids.max() < 8000
++
++
++def test_metadata_groups_generalize_to_study_and_paper_entities():
++    registry = {
++        1: {"child_table": "study-outcome", "parent_table": "studies"},
++        2: {"child_table": "outcomes", "parent_table": "studies"},
++        3: {"child_table": "outcome_analyses", "parent_table": "outcomes"},
++    }
++    assert replication_groups(registry, "study-outcome", "studies", {"studies", "outcomes", "outcome_analyses"}) == {
++        "task_entity": [1], "database": [2, 3],
++    }
++
++
++def test_explicit_query_loader_rejects_sampler_retries_that_change_target():
++    dataset = SimpleNamespace(
++        sampler=SimpleNamespace(batch_for_nodes_py=lambda *_: make_batch([0, 1])),
++        _process_batch=lambda batch: batch,
++    )
++    loader = SelectedContextLoader(dataset, [0, 1], 48)
++    assert len(loader) == 1
++    assert next(iter(loader))["node_idxs"].shape[0] == 2
++    dataset.sampler.batch_for_nodes_py = lambda *_: make_batch([0, 0])
++    with pytest.raises(ValueError, match="exactly the frozen selected queries"):
++        next(iter(loader))
++
++
++def test_single_date_does_not_produce_a_spurious_zero_width_temporal_interval():
++    labels = np.tile([0, 1], 8)
++    scores = np.arange(16)
++    result = clustered_auc_delta(labels, scores, scores[::-1][None, :], np.zeros(16), np.arange(16), replicates=100)
++    assert result["date_percentile_95"] is None
++    assert result["date_status"] == "single_cluster_not_estimable"
++    assert result["crossed_status"] == "only_one_varying_cluster_axis"
++
++
++def test_seed_paired_reference_contrast_uses_mean_auroc_not_auroc_of_mean_scores():
++    from sklearn.metrics import roc_auc_score
++
++    labels = np.array([0, 1, 0, 1, 0, 1])
++    reference = np.array([[0, 1, 2, 3, 4, 5], [10, 2, 3, 4, 5, 6]])
++    arms = reference[:, ::-1]
++    result = clustered_auc_delta(labels, reference, arms, [0, 0, 1, 1, 2, 2], np.arange(6), replicates=100)
++    expected = np.mean([roc_auc_score(labels, s) for s in arms]) - np.mean([roc_auc_score(labels, s) for s in reference])
++    assert result["point"] == pytest.approx(expected)
++
++
++def test_scoped_embeddings_reject_a_different_query_panel_before_sampling(tmp_path):
++    pytest.importorskip("rt")
++    from rfm_structure.replication import replication_evaluator
++
++    directory = tmp_path / "example"
++    directory.mkdir()
++    (directory / "embedding_scope.json").write_text(json.dumps({
++        "status": "complete", "query_ids": [0, 1], "context_fingerprints": {"48": "test"},
++    }))
++    with pytest.raises(ValueError, match="coverage does not match"):
++        replication_evaluator(tmp_path, SimpleNamespace(db_name="example"), [1, 0], 48)
++
++
++def scoped_embedding_fixture(tmp_path):
++    from rfm_structure.provenance import file_identity
++
++    directory = tmp_path / "example"
++    directory.mkdir()
++    path = directory / "text_emb_all-MiniLM-L12-v2.bin"
++    np.zeros((2, 384), dtype=np.uint16).tofile(path)
++    scope = {"status": "complete", "encoder_revision": MINILM_REVISION,
++             "encoder_dtype": "float32", "stored_dtype": "bfloat16",
++             "encoder_weights": {"sha256": MINILM_WEIGHTS_SHA256},
++             "embedding_file": {**file_identity(path), "path": "/old/machine/embedding.bin"},
++             "query_ids": [0, 1], "context_fingerprints": {"48": "test"}}
++    return path, scope
++
++
++def test_scoped_embedding_identity_checks_current_file_even_when_wrong_vectors_are_finite(tmp_path):
++    path, scope = scoped_embedding_fixture(tmp_path)
++    validate_embedding_scope(tmp_path, "example", scope)
++    # BF16 1.0: still finite, same size, different vectors.
++    np.full((2, 384), 0x3F80, dtype=np.uint16).tofile(path)
++    vectors = (np.fromfile(path, dtype=np.uint16).astype(np.uint32) << 16).view(np.float32)
++    assert np.isfinite(vectors).all()
++    with pytest.raises(ValueError, match="file identity differs"):
++        validate_embedding_scope(tmp_path, "example", scope)
++    (path.parent / "embedding_scope.json").write_text(json.dumps(scope))
++    pytest.importorskip("rt")
++    from rfm_structure.replication import replication_evaluator
++
++    with pytest.raises(ValueError, match="file identity differs"):
++        replication_evaluator(tmp_path, SimpleNamespace(db_name="example"), [0, 1], 48)
++
++
++@pytest.mark.parametrize("field,value", [("encoder_revision", "wrong"),
++                                          ("encoder_dtype", "bfloat16"),
++                                          ("stored_dtype", "float32"),
++                                          ("encoder_weights", {"sha256": "wrong"})])
++def test_scoped_embeddings_reject_wrong_encoder_protocol(tmp_path, field, value):
++    _, scope = scoped_embedding_fixture(tmp_path)
++    scope[field] = value
++    with pytest.raises(ValueError, match="encoder provenance differs"):
++        validate_embedding_scope(tmp_path, "example", scope)
++
++
++def test_unscoped_fully_encoded_artifacts_do_not_require_scope_provenance(tmp_path):
++    validate_embedding_scope(tmp_path, "example", None)
++
++
++def test_frozen_runner_validation_rejects_nonfinite_embeddings_and_keeps_pairing(tmp_path, monkeypatch):
++    from experiment_fixtures import make_evaluator
++
++    monkeypatch.syspath_prepend(str(Path(__file__).parents[1] / "experiments"))
++    functions = runpy.run_path(str(Path(__file__).parents[1] / "experiments/run_database_replications.py"))
++    raw = make_batch([2, 0, 1])
++    raw["number_values"][:, 0, 0] = [0, 1, 0]
++    raw["text_values"] = np.zeros((3, 48, 384), dtype=np.float32)
++    raw["col_name_values"] = np.zeros((3, 48, 384), dtype=np.float32)
++    ev = make_evaluator([raw], 3, count=3)
++    policy = {"tables": [{"table": "known", "start": 0, "stop": 30000,
++                          "time_col": "date", "label_column": None, "horizon_seconds": 0}]}
++    valid = tmp_path / "valid"
++    valid.mkdir()
++    report = functions["validate_panel"](ev, np.array([2, 0, 1]), {"task_entity": [7], "database": [8]}, policy, valid, None)
++    assert report["status"] == "passed"
++    assert report["target_node_idxs"] == [2, 0, 1]
++    assert len(report["per_arm"]) == 7
++    raw["text_values"][0, 0, 0] = np.nan
++    invalid = tmp_path / "invalid"
++    invalid.mkdir()
++    with pytest.raises(ValueError, match="unencoded/nonfinite"):
++        functions["validate_panel"](ev, np.array([2, 0, 1]), {"task_entity": [7], "database": [8]}, policy, invalid, None)
++    assert json.loads((invalid / "validation.json").read_text())["status"] == "failed"
+diff --git a/tests/test_scoped_preparation.py b/tests/test_scoped_preparation.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_scoped_preparation.py
+@@ -0,0 +1,221 @@
++"""Reproducible coverage discovery and no-clobber scoped embedding publication."""
++import importlib.util
++import json
++import sys
++from pathlib import Path
++from types import SimpleNamespace
++
++import numpy as np
++import pytest
++
++from rfm_structure.replication import MINILM_REVISION, MINILM_WEIGHTS_SHA256
++from rfm_structure.validation import batch_fingerprint
++
++
++@pytest.fixture
++def preparation():
++    path = Path(__file__).parents[1] / "experiments/prepare_replication_embeddings.py"
++    spec = importlib.util.spec_from_file_location("scoped_preparation", path)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    return module
++
++
++def test_marker_roundtrip_including_large_ids_and_placeholders(tmp_path, preparation):
++    bf16 = pytest.importorskip("ml_dtypes").bfloat16
++    rows = 128 ** 2 + 3
++    path = tmp_path / "markers.bin"
++    preparation.write_markers(path, rows)
++    vectors = np.memmap(path, mode="r", dtype=bf16, shape=(rows, 384))
++    selected = np.array([0, 127, 128, 128 ** 2, rows - 1])
++    actual = preparation.decode_markers(vectors[selected].astype(np.float32), rows)
++    np.testing.assert_array_equal(actual, selected)
++    assert not vectors[:, 4:].any()
++    with pytest.raises(FileExistsError):
++        preparation.write_markers(path, rows)
++
++
++def test_marker_rejects_fractional_nonfinite_and_out_of_range(preparation):
++    for value in (-1, 128, 0.5, np.nan):
++        values = np.zeros((1, 384))
++        values[0, 0] = value
++        with pytest.raises(ValueError, match="invalid lookup marker"):
++            preparation.decode_markers(values, 200)
++    values = np.zeros((1, 384))
++    values[0, 0] = 5
++    with pytest.raises(ValueError, match="outside text table"):
++        preparation.decode_markers(values, 5)
++
++
++def test_coverage_unions_text_schema_and_padding_without_modifying_source(tmp_path, preparation):
++    bf16 = pytest.importorskip("ml_dtypes").bfloat16
++    source = tmp_path / "rel-arxiv"
++    source.mkdir()
++    (source / "nodes.rkyv").write_bytes(b"intact")
++    (source / preparation.EMBEDDING_FILE).write_bytes(b"do not overwrite")
++    (source / "embedding_scope.json").write_text("original")
++    expected = {}
++
++    def factory(root, task, query_ids, ctx, **kwargs):
++        assert kwargs == {"allow_marker_embeddings": True}
++        assert (root / "rel-arxiv/nodes.rkyv").read_bytes() == b"intact"
++        markers = np.memmap(root / "rel-arxiv" / preparation.EMBEDDING_FILE,
++                            mode="r", dtype=bf16, shape=(8, 384))
++        arrays = {"node_idxs": np.array([[10, 50], [11, 51]]),
++                  "is_targets": np.array([[True, False], [True, False]]),
++                  "is_padding": np.array([[False, True], [False, True]]),
++                  "batch_mask": np.ones(2, dtype=bool)}
++        expected[str(ctx)] = batch_fingerprint(arrays)
++        # IDs 0 and 7 occur only at padded positions; still required lookups.
++        arrays["text_values"] = markers[[[1, 0], [2 if ctx == 48 else 3, 0]]].astype(np.float32)
++        arrays["col_name_values"] = markers[[[4, 7], [5, 0]]].astype(np.float32)
++        return SimpleNamespace(eval_loaders={task: [arrays]})
++
++    covered, fingerprints = preparation.collect_coverage(
++        tmp_path, "rel-arxiv", "task", np.array([10, 11]), 8, evaluator_factory=factory)
++    assert covered == [0, 1, 2, 3, 4, 5, 7]
++    assert fingerprints == expected
++    assert (source / preparation.EMBEDDING_FILE).read_bytes() == b"do not overwrite"
++    assert (source / "embedding_scope.json").read_text() == "original"
++    assert sorted(p.name for p in source.iterdir()) == [
++        "embedding_scope.json", "nodes.rkyv", preparation.EMBEDDING_FILE]
++
++
++def published_fixture(tmp_path, preparation):
++    directory = tmp_path / "rel-arxiv"
++    directory.mkdir()
++    scope = {"database": "rel-arxiv", "task": "paper-citation", "sampling_seed": 0,
++             "selection_seed": 20261007, "contexts": [48, 128], "text_rows": 8,
++             "query_ids": [10, 11], "encoded_text_ids": [0, 2], "encoded_text_count": 2,
++             "context_fingerprints": {"48": "first", "128": "second"},
++             "encoder_revision": MINILM_REVISION, "encoder_dtype": "float32",
++             "stored_dtype": "bfloat16", "encoder_weights": {"sha256": MINILM_WEIGHTS_SHA256}}
++    encoded = np.full((2, 384), 0x3F80, dtype=np.uint16)  # finite BF16 1.0
++    scope = preparation.publish_embeddings(directory, 8, [0, 2], encoded, scope)
++    return directory, scope, encoded
++
++
++def test_publish_and_check_layout_scope_and_no_overwrite(tmp_path, preparation):
++    directory, scope, encoded = published_fixture(tmp_path, preparation)
++    returned = preparation.check_existing(tmp_path, "rel-arxiv", [10, 11], 8, [0, 2],
++                                           scope["context_fingerprints"])
++    assert returned == scope
++    before = (directory / preparation.EMBEDDING_FILE).read_bytes()
++    with pytest.raises(FileExistsError, match="refusing to overwrite"):
++        preparation.publish_embeddings(directory, 8, [0, 2], encoded, scope)
++    assert (directory / preparation.EMBEDDING_FILE).read_bytes() == before
++    assert json.loads((directory / "embedding_scope.json").read_text()) == scope
++
++
++@pytest.mark.parametrize("key,value", [("query_ids", [11, 10]), ("encoded_text_ids", [0, 3]),
++                                      ("encoded_text_count", 3), ("sampling_seed", 1),
++                                      ("context_fingerprints", {"48": "wrong", "128": "second"})])
++def test_check_existing_rejects_reconstructed_coverage_mismatch(tmp_path, preparation, key, value):
++    directory, scope, _ = published_fixture(tmp_path, preparation)
++    (directory / "embedding_scope.json").write_text(json.dumps({**scope, key: value}))
++    with pytest.raises(ValueError, match=f"reconstructed {key}"):
++        preparation.check_existing(tmp_path, "rel-arxiv", [10, 11], 8, [0, 2],
++                                   scope["context_fingerprints"])
++
++
++def test_check_existing_rejects_finite_wrong_file(tmp_path, preparation):
++    directory, scope, _ = published_fixture(tmp_path, preparation)
++    np.zeros((8, 384), dtype=np.uint16).tofile(directory / preparation.EMBEDDING_FILE)
++    with pytest.raises(ValueError, match="file identity differs"):
++        preparation.check_existing(tmp_path, "rel-arxiv", [10, 11], 8, [0, 2],
++                                   scope["context_fingerprints"])
++
++
++@pytest.mark.parametrize("row,bits", [(0, 0x7F80), (0, 0x7FC0), (1, 0x3F80)])
++def test_layout_rejects_nonfinite_covered_or_finite_unused(tmp_path, preparation, row, bits):
++    directory, _, _ = published_fixture(tmp_path, preparation)
++    path = directory / preparation.EMBEDDING_FILE
++    vectors = np.memmap(path, mode="r+", dtype=np.uint16, shape=(8, 384))
++    vectors[row, 0] = bits
++    vectors.flush()
++    with pytest.raises(ValueError, match="covered vectors must be finite"):
++        preparation.verify_vector_layout(path, 8, [0, 2])
++
++
++def test_failed_scope_publication_removes_only_own_embedding(tmp_path, preparation, monkeypatch):
++    directory = tmp_path / "rel-arxiv"
++    directory.mkdir()
++    original_link = preparation.os.link
++
++    def raced_link(source, target):
++        if Path(target).name == "embedding_scope.json":
++            Path(target).write_text("another writer")
++        return original_link(source, target)
++
++    monkeypatch.setattr(preparation.os, "link", raced_link)
++    with pytest.raises(FileExistsError):
++        preparation.publish_embeddings(directory, 2, [0], np.zeros((1, 384), dtype=np.uint16), {})
++    assert not (directory / preparation.EMBEDDING_FILE).exists()
++    assert (directory / "embedding_scope.json").read_text() == "another writer"
++
++
++def test_check_only_never_encodes_or_loads_encoder(tmp_path, preparation, monkeypatch):
++    rt_tasks = pytest.importorskip("rt.tasks")
++    directory, scope, _ = published_fixture(tmp_path, preparation)
++    (directory / "meta.json").write_text(json.dumps({"num_text_strings": 8}))
++    task = SimpleNamespace(table_name="paper-citation", task_type="clf")
++    monkeypatch.setattr(rt_tasks, "tasks_from_preprocessed", lambda *a, **kw: [task])
++    monkeypatch.setattr(preparation, "selected_query_ids", lambda *a: np.array([10, 11]))
++    monkeypatch.setattr(preparation, "collect_coverage", lambda *a: ([0, 2], scope["context_fingerprints"]))
++
++    def forbidden(*args, **kwargs):
++        raise AssertionError("coverage-only mode must never load or invoke an encoder")
++
++    monkeypatch.setattr(preparation, "encode_selected", forbidden)
++    assert preparation.prepare(tmp_path, "rel-arxiv", check_only=True) == scope
++    with pytest.raises(FileExistsError):
++        preparation.prepare(tmp_path, "rel-arxiv")
++
++
++def test_encoding_pins_offline_snapshot_fp32_and_converts_to_bf16(tmp_path, preparation, monkeypatch):
++    torch = pytest.importorskip("torch")
++    calls = {}
++
++    def snapshot_download(repo, **kwargs):
++        calls["download"] = (repo, kwargs)
++        return str(tmp_path)
++
++    class Encoder:
++        def __init__(self, path, **kwargs):
++            calls["model"] = (path, kwargs)
++
++        def parameters(self):
++            return [torch.zeros(1, dtype=torch.float32)]
++
++        def encode(self, texts, **kwargs):
++            assert not torch.is_grad_enabled()
++            calls["encode"] = (texts, kwargs)
++            return torch.ones((len(texts), 384), dtype=torch.float32)
++
++    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(snapshot_download=snapshot_download))
++    monkeypatch.setitem(sys.modules, "sentence_transformers", SimpleNamespace(SentenceTransformer=Encoder))
++    monkeypatch.setattr(preparation, "file_identity", lambda path: {"sha256": MINILM_WEIGHTS_SHA256})
++    vectors, weights = preparation.encode_selected(["placeholder", "unused", "schema"], [0, 2],
++                                                   device="cpu", batch_size=16)
++    assert calls["download"] == (preparation.MODEL, {"revision": MINILM_REVISION, "local_files_only": True})
++    assert calls["model"] == (str(tmp_path), {"device": "cpu", "local_files_only": True,
++                                             "model_kwargs": {"dtype": torch.float32}})
++    assert calls["encode"][0] == ["placeholder", "schema"]
++    assert calls["encode"][1] == {"batch_size": 16, "convert_to_tensor": True,
++                                  "convert_to_numpy": False, "normalize_embeddings": False,
++                                  "show_progress_bar": True}
++    assert vectors.dtype == np.uint16 and vectors.shape == (2, 384)
++    assert np.all(vectors == 0x3F80)
++    assert weights["sha256"] == MINILM_WEIGHTS_SHA256
++    monkeypatch.setattr(preparation, "file_identity", lambda path: {"sha256": "wrong"})
++    with pytest.raises(ValueError, match="weights differ"):
++        preparation.encode_selected(["placeholder"], [0], device="cpu", batch_size=16)
++
++
++@pytest.mark.parametrize("name", ["embedding_scope.json", "text_emb_all-MiniLM-L12-v2.bin"])
++def test_publication_refuses_preexisting_partial_artifact(tmp_path, preparation, name):
++    (tmp_path / name).write_bytes(b"existing partial artifact")
++    with pytest.raises(FileExistsError, match="refusing to overwrite"):
++        preparation.publish_embeddings(tmp_path, 2, [0], np.zeros((1, 384), dtype=np.uint16), {})
++    assert (tmp_path / name).read_bytes() == b"existing partial artifact"
++    assert len(list(tmp_path.iterdir())) == 1
+diff --git a/tests/test_visible_support.py b/tests/test_visible_support.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_visible_support.py
+@@ -0,0 +1,88 @@
++"""Visible-label source selection is stricter than non-query task selection."""
++import numpy as np
++import pytest
++
++from rfm_structure.rewiring import assert_structural_invariants, rewire_f2p_nbr
++from rfm_structure.validation import (
++    rewire_and_validate_batch,
++    visible_support_source_mask,
++)
++
++
++def fixture():
++    nodes = np.array([[100, 101, 101, 102, 102, 103, 103, 104, 104,
++                       201, 202, 203, 204, 205, -1]])
++    padding = np.zeros_like(nodes, dtype=bool)
++    padding[0, [6, 8, 14]] = True  # Labels of 103/104 are hidden, but dates remain.
++    targets = np.zeros_like(padding)
++    targets[0, 0] = True
++    task_nodes = np.zeros_like(padding)
++    task_nodes[0, :9] = True
++    cols = np.array([[7, 8, 7, 8, 7, 8, 7, 8, 7, 9, 9, 9, 9, 9, -1]])
++    parents = np.full((*nodes.shape, 2), -1, dtype=np.int64)
++    relations = parents.copy()
++    parents[0, :9, 0] = [201, 202, 202, 203, 203, 204, 204, 205, 205]
++    relations[0, :9, 0] = 7
++    parents[0, 1:5, 1] = [203, 203, 204, 204]
++    relations[0, 1:5, 1] = 8  # Another relation must not change on selected rows.
++    timestamps = np.full_like(nodes, 2)
++    timestamps[0, 0] = 10
++    return {"node_idxs": nodes, "is_padding": padding, "is_targets": targets,
++            "is_task_nodes": task_nodes, "col_name_idxs": cols,
++            "number_values": np.zeros((*nodes.shape, 1)), "timestamps": timestamps,
++            "f2p_nbr_idxs": parents, "f2p_rel_idxs": relations}
++
++
++@pytest.mark.parametrize("seed", [101, 202, 303])
++def test_support_only_permutation_preserves_query_hidden_rows_other_relations_and_content(seed):
++    base = fixture()
++    mask = visible_support_source_mask(base)
++    assert np.flatnonzero(mask[0]).tolist() == [1, 2, 3, 4]
++    evidence = rewire_and_validate_batch(base, seed, 1, {"tables": []}, [7], source_mask=mask)
++    assert not evidence["errors"]
++    expected = base["f2p_nbr_idxs"].copy()
++    expected[0, 1:5, 0] = [203, 203, 202, 202]
++    np.testing.assert_array_equal(evidence["batch"]["f2p_nbr_idxs"], expected)
++    assert evidence["totals"]["changed_edges"] == 2  # Edge instances, not four cells.
++    assert evidence["totals"]["max_changed_edges"] == 2
++    for key in base:
++        if key != "f2p_nbr_idxs":
++            np.testing.assert_array_equal(evidence["batch"][key], base[key])
++    assert not assert_structural_invariants(base["f2p_nbr_idxs"], expected, base["f2p_rel_idxs"],
++                                            base["node_idxs"], base["is_padding"], enforce_fanout=False)
++
++
++@pytest.mark.parametrize("visible", [0, 1])
++def test_too_few_visible_support_rows_do_not_exchange_with_hidden_rows(visible):
++    base = fixture()
++    base["is_padding"][0, [2, 4] if visible == 0 else [4]] = True
++    mask = visible_support_source_mask(base)
++    result = rewire_and_validate_batch(base, 101, 1, {"tables": []}, [7], source_mask=mask)
++    np.testing.assert_array_equal(result["batch"]["f2p_nbr_idxs"], base["f2p_nbr_idxs"])
++    assert result["totals"]["changed_edges"] == result["totals"]["max_changed_edges"] == 0
++
++
++def test_duplicate_visible_parent_id_can_be_unchangeable_even_with_two_support_rows():
++    base = fixture()
++    base["f2p_nbr_idxs"][0, 3:5, 0] = 202
++    result = rewire_and_validate_batch(base, 101, 1, {"tables": []}, [7], source_mask=visible_support_source_mask(base))
++    assert result["totals"]["max_changed_edges"] == 0
++    np.testing.assert_array_equal(result["batch"]["f2p_nbr_idxs"], base["f2p_nbr_idxs"])
++
++
++def test_nonfinite_support_label_is_not_selected_and_cellwise_masks_are_rejected():
++    base = fixture()
++    base["number_values"][0, 2, 0] = np.nan
++    mask = visible_support_source_mask(base)
++    assert not mask[0, 1:3].any()
++    mask[0, 3] = False  # Contradicts the label cell of source 102.
++    with pytest.raises(ValueError, match="disagrees across cells"):
++        rewire_f2p_nbr(base["f2p_nbr_idxs"], base["f2p_rel_idxs"], base["node_idxs"],
++                       base["is_padding"], 101, source_mask=mask)
++
++
++def test_visible_support_mask_does_not_depend_on_label_value():
++    base = fixture()
++    before = visible_support_source_mask(base)
++    base["number_values"][0, [2, 4], 0] = [-2.7, 0.37]
++    np.testing.assert_array_equal(visible_support_source_mask(base), before)

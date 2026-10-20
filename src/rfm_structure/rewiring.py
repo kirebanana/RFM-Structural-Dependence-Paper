@@ -40,6 +40,21 @@ def _cells_by_source(node_idxs_b, pad_b, s_max):
     return out
 
 
+def _assignment_cycles(assignment):
+    """Yield disjoint permutation cycles in the original shuffled-index order."""
+    visited = set()
+    for start in range(len(assignment)):
+        if start in visited:
+            continue
+        cycle = []
+        index = start
+        while index not in visited:
+            visited.add(index)
+            cycle.append(index)
+            index = int(assignment[index])
+        yield cycle
+
+
 def rewire_f2p_nbr(
     nbr,
     rel,
@@ -50,6 +65,10 @@ def rewire_f2p_nbr(
     registry=None,
     sequence_stats=None,
     alpha=1.0,
+    relation_ids=None,
+    cycle_mode=None,
+    query_node_ids=None,
+    source_mask=None,
 ):
     """Reassign eligible FK parent IDs without changing the input array.
 
@@ -74,11 +93,34 @@ def rewire_f2p_nbr(
     matching. Intermediate strengths select whole cycles in shuffled-index
     order, accepting only strict improvements toward Python's round-to-even
     target. Cycle selection consumes no RNG, preserving the legacy 1.0 stream.
+    ``relation_ids`` optionally restricts applied assignments. All strata still
+    consume their original matching RNG, so a targeted relation gets exactly
+    its assignment from the corresponding all-relations intervention. Exposure
+    retains all eligible edges, but maximum changes count only selected relations.
+    Optional touching_query/excluding_query modes select whole matching cycles
+    by whether they contain the query source row; they never cut a cycle into
+    individual FK edges. Query-touching cycles can also change other task rows.
+    ``source_mask`` instead defines a fresh matching pool containing only selected
+    source rows. Each row's retained cells must agree on selection. Its parents
+    are permuted only among that pool; excluded sources remain exactly fixed.
     """
     if not np.isfinite(alpha) or not 0 <= alpha <= 1:
         raise ValueError("alpha must be a finite fraction between 0 and 1")
+    if relation_ids is not None:
+        relation_ids = frozenset(relation_ids)
+        if any(not isinstance(r, (int, np.integer)) or r < 0 for r in relation_ids):
+            raise ValueError("relation IDs must be nonnegative integers")
     nbr = nbr.copy()
     B, S, F = nbr.shape
+    if source_mask is not None:
+        if np.shape(source_mask) != (B, S) or np.asarray(source_mask).dtype != np.bool_:
+            raise ValueError("source mask must be a boolean B-by-S array")
+        if cycle_mode is not None:
+            raise ValueError("source-pool selection and full-matching cycle controls are distinct interventions")
+    if cycle_mode not in (None, "touching_query", "excluding_query"):
+        raise ValueError("unknown query-cycle mode")
+    if cycle_mode is not None and (query_node_ids is None or np.shape(query_node_ids) != (B,)):
+        raise ValueError("query-cycle controls require one query node ID per context")
     if stats is None:
         stats = {}
     rng = np.random.default_rng(np.random.PCG64(seed))
@@ -111,6 +153,10 @@ def rewire_f2p_nbr(
                 sequence_stats.append(seq_stats)
             continue
         cells_by_u = _cells_by_source(node_idxs[b], pad, S)
+        if source_mask is not None:
+            for source, cells in cells_by_u.items():
+                if not np.all(source_mask[b, cells] == source_mask[b, cells[0]]):
+                    raise ValueError(f"source mask disagrees across cells of row {source}")
         parent_nodes = set()
 
         # One source row can occupy several cells; all copies must agree on FK slots.
@@ -175,6 +221,13 @@ def rewire_f2p_nbr(
                 seq_stats["singleton_edges"] += 1
                 relation_stats["singleton_edges"] += 1
                 continue
+            if source_mask is not None:
+                # Eligibility accounting still describes the whole sampled
+                # stratum. Only the selected sources enter the new permutation.
+                edges = [edge for edge in edges if source_mask[b, cells_by_u[edge[0]][0]]]
+                M = len(edges)
+                if M < 2:
+                    continue
             p_arr = np.array([e[2] for e in edges], dtype=np.int64)
             u_arr = np.array([e[0] for e in edges], dtype=np.int64)
 
@@ -203,25 +256,28 @@ def rewire_f2p_nbr(
                 relation_stats["unrewirable_edges"] += M
                 continue
 
+            targeted = relation_ids is None or r in relation_ids
+            if not targeted:
+                col_ind = np.arange(M)
+            elif cycle_mode is not None:
+                restricted = np.arange(M)
+                for cycle in _assignment_cycles(col_ind):
+                    touches = bool(np.any(u_arr[cycle] == query_node_ids[b]))
+                    if touches == (cycle_mode == "touching_query"):
+                        restricted[cycle] = col_ind[cycle]
+                col_ind = restricted
             full_changed = int(np.sum(p_arr[col_ind] != p_arr))
             total_max_changed += full_changed
             seq_stats["max_changed_edges"] += full_changed
             relation_stats["max_changed_edges"] += full_changed
             selected = col_ind
-            if alpha < 1:
+            if not targeted:
                 selected = np.arange(M)
-                visited = set()
+            elif alpha < 1:
+                selected = np.arange(M)
                 changed = 0
                 target = round(alpha * full_changed)
-                for start in range(M):
-                    if start in visited:
-                        continue
-                    cycle = []
-                    i = start
-                    while i not in visited:
-                        visited.add(i)
-                        cycle.append(i)
-                        i = int(col_ind[i])
+                for cycle in _assignment_cycles(col_ind):
                     weight = int(np.sum(p_arr[col_ind[cycle]] != p_arr[cycle]))
                     if weight and abs(changed + weight - target) < abs(changed - target):
                         selected[cycle] = col_ind[cycle]

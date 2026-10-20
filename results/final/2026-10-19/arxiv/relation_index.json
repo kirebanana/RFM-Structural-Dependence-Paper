@@ -1,0 +1,50 @@
+{
+  "1173731": {
+    "child_table": "papers",
+    "fk_column": "Primary_Category_ID",
+    "parent_table": "categories",
+    "parent_table_idx": 4
+  },
+  "1173740": {
+    "child_table": "paperAuthors",
+    "fk_column": "Author_ID",
+    "parent_table": "authors",
+    "parent_table_idx": 10
+  },
+  "7": {
+    "child_table": "citations",
+    "fk_column": "Paper_ID",
+    "parent_table": "papers",
+    "parent_table_idx": 2
+  },
+  "8": {
+    "child_table": "citations",
+    "fk_column": "References_Paper_ID",
+    "parent_table": "papers",
+    "parent_table_idx": 2
+  },
+  "1": {
+    "child_table": "paperCategories",
+    "fk_column": "Paper_ID",
+    "parent_table": "papers",
+    "parent_table_idx": 2
+  },
+  "1173736": {
+    "child_table": "paper-citation",
+    "fk_column": "Paper_ID",
+    "parent_table": "papers",
+    "parent_table_idx": 2
+  },
+  "1173739": {
+    "child_table": "paperAuthors",
+    "fk_column": "Paper_ID",
+    "parent_table": "papers",
+    "parent_table_idx": 2
+  },
+  "3": {
+    "child_table": "paperCategories",
+    "fk_column": "Category_ID",
+    "parent_table": "categories",
+    "parent_table_idx": 4
+  }
+}

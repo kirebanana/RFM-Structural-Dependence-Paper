@@ -1,0 +1,44 @@
+{
+  "amendment": "review_2026_10_20",
+  "date": "2026-10-20",
+  "baseline": "81e4fa4fdb98ea6ce5973ec4772f91dc4ca9a468",
+  "previous_inventory": {
+    "path": "provenance/pre_review_checksums.json",
+    "bytes": 41946,
+    "sha256": "0b1bc69bb0bb41d6335c59f969cbac97c7cc298606f4a31f5a177cfbbb1ec769",
+    "scope": "Exact inventory before independent-review corrections; historical paths relative to the original release root, not a current inventory."
+  },
+  "original_source_snapshot_preserved": [
+    "source_at_finalization.patch",
+    "source_identity.json"
+  ],
+  "amended_source_snapshot": [
+    "source_review_2026_10_20.patch",
+    "source_review_2026_10_20_identity.json"
+  ],
+  "unchanged_original_npz_files": 199,
+  "model_inference_rerun": false,
+  "changes": [
+    "RQ2 feature categories corrected; assignment-informed historical fits mapped without numerical changes; context-only comparisons added; clean-score coupling and affected-cohort selection disclosed.",
+    "Mandatory exhaustive release inventory and exact protocol/condition enforcement; uniform per-query temporal and availability reconciliation across historical formats.",
+    "Exact-byte authenticated ArXiv/Trial relation registries exported; task/entity versus database groups reconstructed by the verifier.",
+    "Authoritative redistribution assessment and safe options documented; unresolved permissions remain publication blockers."
+  ],
+  "historical_rq2_outputs": "relation_analysis/pre_review/",
+  "historical_fits_preserved": 96,
+  "publication_status": "Not cleared for public release: see docs/REDISTRIBUTION.md; no visibility/history/publication changes performed.",
+  "followup": {
+    "finding": "Independent re-review found F1 group-name checks permitted semantically broadened memberships.",
+    "fix": "Reconstruct F1 relation groups from primary-matched registry; cycle/support groups must equal task-driver set; four new coherently rehashed corruption regressions.",
+    "licensing_qualification": "Archived Ergast database-image page optional-attribution statement documented alongside its CC license declaration.",
+    "previous_inventory": {
+      "path": "provenance/review_firstpass_checksums.json",
+      "bytes": 43262,
+      "sha256": "08f594c416ec19f5792a1a3835c3f8766a5ea993b1cfee91990a6d182b6c4770"
+    },
+    "latest_source_snapshot": [
+      "source_review_2026_10_20_followup.patch",
+      "source_review_2026_10_20_followup_identity.json"
+    ]
+  }
+}

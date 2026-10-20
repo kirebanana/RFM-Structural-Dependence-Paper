@@ -1,0 +1,29 @@
+{
+  "database": "rel-trial",
+  "task": "study-outcome",
+  "test_offset": 5852157,
+  "manifest": {
+    "name": "study-outcome",
+    "kind": "forecast",
+    "task_type": "binary_classification",
+    "description": "Predict if the trials in the next 1 year will achieve its primary outcome.",
+    "entity_table": "studies",
+    "entity_col": "nct_id",
+    "target_col": "outcome",
+    "time_col": "timestamp",
+    "timedelta": "365 days",
+    "sql": "WITH TRIAL_INFO AS (\n    SELECT\n        oa.nct_id,\n        oa.p_value,\n        s.start_date,\n        oa.date\n    FROM outcome_analyses oa\n    LEFT JOIN outcomes o\n    ON oa.outcome_id = o.id\n    LEFT JOIN studies s\n    ON s.nct_id = o.nct_id\n    where (oa.p_value_modifier is null or oa.p_value_modifier != '>')\n    and oa.p_value >=0\n    and oa.p_value <=1\n    and o.outcome_type = 'Primary'\n)\n\nSELECT\n    t.timestamp,\n    tr.nct_id,\n    CASE\n        WHEN MIN(tr.p_value) <= 0.05 THEN 1\n        ELSE 0\n    END AS outcome\nFROM timestamps t\nLEFT JOIN TRIAL_INFO tr\nON tr.start_date <= t.timestamp\n    and tr.date > t.timestamp\n    and tr.date <= t.timestamp + INTERVAL '{timedelta}'\nWHERE tr.nct_id is not null\nGROUP BY t.timestamp, tr.nct_id;",
+    "manifest_version": 1
+  },
+  "official_test_size": 825,
+  "raw_test": {
+    "path": "test.parquet",
+    "bytes": 7174,
+    "sha256": "f9bba4dc7de9ead33fb1778f840030bc3e98680ac51423392ef72228bcfd3051"
+  },
+  "raw_manifest": {
+    "path": "manifest.yaml",
+    "bytes": 1088,
+    "sha256": "1a1386add4e067dbdf33f2a331360450dbc50a7e9d25bcff3a4eb73e0b5e9d2e"
+  }
+}

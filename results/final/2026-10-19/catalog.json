@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "baseline": "81e4fa4fdb98ea6ce5973ec4772f91dc4ca9a468",
+  "primary": "../../preliminary/2026-10-05_validated",
+  "runs": {
+    "relations": {
+      "source_run": "relation_controls_1791303494752864585",
+      "state_file": "controls.json",
+      "database": "rel-f1",
+      "task": "driver-dnf",
+      "clean_reference": "../../preliminary/2026-10-05_validated"
+    },
+    "task_cycles": {
+      "source_run": "relation_controls_1791304770103606851",
+      "state_file": "controls.json",
+      "database": "rel-f1",
+      "task": "driver-dnf",
+      "clean_reference": "../../preliminary/2026-10-05_validated"
+    },
+    "labeled_support": {
+      "source_run": "relation_controls_1792159329463334922",
+      "state_file": "controls.json",
+      "database": "rel-f1",
+      "task": "driver-dnf",
+      "clean_reference": "../../preliminary/2026-10-05_validated"
+    },
+    "driver_top3": {
+      "source_run": "preliminary_1791306037626899928",
+      "state_file": "matrix.json",
+      "database": "rel-f1",
+      "task": "driver-top3",
+      "clean_reference": "."
+    },
+    "arxiv": {
+      "source_run": "replication_rel-arxiv_1791980546835938447",
+      "state_file": "replication.json",
+      "database": "rel-arxiv",
+      "task": "paper-citation",
+      "clean_reference": "."
+    },
+    "trial": {
+      "source_run": "replication_rel-trial_1791980898619531972",
+      "state_file": "replication.json",
+      "database": "rel-trial",
+      "task": "study-outcome",
+      "clean_reference": "."
+    }
+  }
+}

@@ -1,0 +1,202 @@
+{
+  "method": "CPU context replay; independent retained-cell classification; source/FK slots counted once",
+  "contexts": {
+    "48": {
+      "task_cycles": {
+        "101": {
+          "eligible": {
+            "query": 702,
+            "visible_label": 1273,
+            "hidden_label": 1410
+          },
+          "changed": {
+            "query": 0,
+            "visible_label": 642,
+            "hidden_label": 537
+          },
+          "affected_queries": 420,
+          "visible_pool_zero_queries": 238,
+          "visible_pool_singleton_queries": 178
+        },
+        "202": {
+          "eligible": {
+            "query": 702,
+            "visible_label": 1273,
+            "hidden_label": 1410
+          },
+          "changed": {
+            "query": 0,
+            "visible_label": 665,
+            "hidden_label": 548
+          },
+          "affected_queries": 425,
+          "visible_pool_zero_queries": 238,
+          "visible_pool_singleton_queries": 178
+        },
+        "303": {
+          "eligible": {
+            "query": 702,
+            "visible_label": 1273,
+            "hidden_label": 1410
+          },
+          "changed": {
+            "query": 0,
+            "visible_label": 647,
+            "hidden_label": 546
+          },
+          "affected_queries": 417,
+          "visible_pool_zero_queries": 238,
+          "visible_pool_singleton_queries": 178
+        }
+      },
+      "labeled_support": {
+        "101": {
+          "eligible": {
+            "query": 702,
+            "visible_label": 1273,
+            "hidden_label": 1410
+          },
+          "changed": {
+            "query": 0,
+            "visible_label": 451,
+            "hidden_label": 0
+          },
+          "affected_queries": 158,
+          "visible_pool_zero_queries": 238,
+          "visible_pool_singleton_queries": 178
+        },
+        "202": {
+          "eligible": {
+            "query": 702,
+            "visible_label": 1273,
+            "hidden_label": 1410
+          },
+          "changed": {
+            "query": 0,
+            "visible_label": 451,
+            "hidden_label": 0
+          },
+          "affected_queries": 158,
+          "visible_pool_zero_queries": 238,
+          "visible_pool_singleton_queries": 178
+        },
+        "303": {
+          "eligible": {
+            "query": 702,
+            "visible_label": 1273,
+            "hidden_label": 1410
+          },
+          "changed": {
+            "query": 0,
+            "visible_label": 451,
+            "hidden_label": 0
+          },
+          "affected_queries": 158,
+          "visible_pool_zero_queries": 238,
+          "visible_pool_singleton_queries": 178
+        }
+      }
+    },
+    "128": {
+      "task_cycles": {
+        "101": {
+          "eligible": {
+            "query": 702,
+            "visible_label": 3424,
+            "hidden_label": 1383
+          },
+          "changed": {
+            "query": 0,
+            "visible_label": 1789,
+            "hidden_label": 777
+          },
+          "affected_queries": 587,
+          "visible_pool_zero_queries": 59,
+          "visible_pool_singleton_queries": 104
+        },
+        "202": {
+          "eligible": {
+            "query": 702,
+            "visible_label": 3424,
+            "hidden_label": 1383
+          },
+          "changed": {
+            "query": 0,
+            "visible_label": 1730,
+            "hidden_label": 785
+          },
+          "affected_queries": 593,
+          "visible_pool_zero_queries": 59,
+          "visible_pool_singleton_queries": 104
+        },
+        "303": {
+          "eligible": {
+            "query": 702,
+            "visible_label": 3424,
+            "hidden_label": 1383
+          },
+          "changed": {
+            "query": 0,
+            "visible_label": 1759,
+            "hidden_label": 750
+          },
+          "affected_queries": 571,
+          "visible_pool_zero_queries": 59,
+          "visible_pool_singleton_queries": 104
+        }
+      },
+      "labeled_support": {
+        "101": {
+          "eligible": {
+            "query": 702,
+            "visible_label": 3424,
+            "hidden_label": 1383
+          },
+          "changed": {
+            "query": 0,
+            "visible_label": 1552,
+            "hidden_label": 0
+          },
+          "affected_queries": 390,
+          "visible_pool_zero_queries": 59,
+          "visible_pool_singleton_queries": 104
+        },
+        "202": {
+          "eligible": {
+            "query": 702,
+            "visible_label": 3424,
+            "hidden_label": 1383
+          },
+          "changed": {
+            "query": 0,
+            "visible_label": 1552,
+            "hidden_label": 0
+          },
+          "affected_queries": 390,
+          "visible_pool_zero_queries": 59,
+          "visible_pool_singleton_queries": 104
+        },
+        "303": {
+          "eligible": {
+            "query": 702,
+            "visible_label": 3424,
+            "hidden_label": 1383
+          },
+          "changed": {
+            "query": 0,
+            "visible_label": 1552,
+            "hidden_label": 0
+          },
+          "affected_queries": 390,
+          "visible_pool_zero_queries": 59,
+          "visible_pool_singleton_queries": 104
+        }
+      }
+    }
+  },
+  "per_query_arrays": {
+    "path": "support_link_audit.npz",
+    "bytes": 66378,
+    "sha256": "a1e245252826f8963699da34d10ecbb411e3ecb1c4cbbee9c224a5d732d57f28"
+  }
+}

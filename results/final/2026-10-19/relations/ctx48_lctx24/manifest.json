@@ -1,0 +1,443 @@
+{
+  "status": "complete",
+  "complete": true,
+  "ctx": 48,
+  "checkpoint": {
+    "name": "stanford-star/rt-plurel/classification",
+    "weights": {
+      "path": "4a369f065d8f69e1da11ee4326ceb9d32cf78ee69255a438449e971f681b7f83",
+      "bytes": 171169918,
+      "sha256": "4a369f065d8f69e1da11ee4326ceb9d32cf78ee69255a438449e971f681b7f83"
+    },
+    "config": {
+      "path": "8e914c9dff33a928d36fdcdb73a9df2b8a90bf49",
+      "bytes": 333,
+      "sha256": "f93b00b5037b99d748cd1965e1ec710dea0e81773c6712af7e171659e3d2e728"
+    },
+    "local_revision": "2ed96efc8007c57d589a31ceb435eb768491c439",
+    "dtype": "bfloat16",
+    "execution": "eager",
+    "device": "NVIDIA GeForce GTX 1650",
+    "capability": [
+      7,
+      5
+    ],
+    "native_bf16": false,
+    "bf16_with_emulation": true,
+    "free_vram_bytes_before_load": 3454795776,
+    "total_vram_bytes": 4294639616
+  },
+  "relation_index": {
+    "25": {
+      "child_table": "constructor_standings",
+      "fk_column": "raceId",
+      "parent_table": "races",
+      "parent_table_idx": 3
+    },
+    "2958": {
+      "child_table": "qualifying",
+      "fk_column": "raceId",
+      "parent_table": "races",
+      "parent_table_idx": 3
+    },
+    "4": {
+      "child_table": "results",
+      "fk_column": "driverId",
+      "parent_table": "drivers",
+      "parent_table_idx": 5
+    },
+    "33": {
+      "child_table": "driver-position",
+      "fk_column": "driverId",
+      "parent_table": "drivers",
+      "parent_table_idx": 5
+    },
+    "2300": {
+      "child_table": "standings",
+      "fk_column": "driverId",
+      "parent_table": "drivers",
+      "parent_table_idx": 5
+    },
+    "2307": {
+      "child_table": "constructor_results",
+      "fk_column": "raceId",
+      "parent_table": "races",
+      "parent_table_idx": 3
+    },
+    "21": {
+      "child_table": "driver-top3",
+      "fk_column": "driverId",
+      "parent_table": "drivers",
+      "parent_table_idx": 5
+    },
+    "2299": {
+      "child_table": "standings",
+      "fk_column": "raceId",
+      "parent_table": "races",
+      "parent_table_idx": 3
+    },
+    "6": {
+      "child_table": "results",
+      "fk_column": "constructorId",
+      "parent_table": "constructors",
+      "parent_table_idx": 7
+    },
+    "2686": {
+      "child_table": "driver-dnf",
+      "fk_column": "driverId",
+      "parent_table": "drivers",
+      "parent_table_idx": 5
+    },
+    "2959": {
+      "child_table": "qualifying",
+      "fk_column": "driverId",
+      "parent_table": "drivers",
+      "parent_table_idx": 5
+    },
+    "2308": {
+      "child_table": "constructor_results",
+      "fk_column": "constructorId",
+      "parent_table": "constructors",
+      "parent_table_idx": 7
+    },
+    "2967": {
+      "child_table": "races",
+      "fk_column": "circuitId",
+      "parent_table": "circuits",
+      "parent_table_idx": 2688
+    },
+    "2": {
+      "child_table": "results",
+      "fk_column": "raceId",
+      "parent_table": "races",
+      "parent_table_idx": 3
+    },
+    "2960": {
+      "child_table": "qualifying",
+      "fk_column": "constructorId",
+      "parent_table": "constructors",
+      "parent_table_idx": 7
+    },
+    "26": {
+      "child_table": "constructor_standings",
+      "fk_column": "constructorId",
+      "parent_table": "constructors",
+      "parent_table_idx": 7
+    }
+  },
+  "arms": {
+    "task_driver_s101": {
+      "auroc": 0.5508563899868247,
+      "predictions": "preds_task_driver_s101.npz",
+      "prediction_sha256": "ee8e242c30216f066b60b023249d0554a58b21251e312a7f8e3c4dd58cf2ceac",
+      "exposure": "validation_exposure_task_driver_s101.npz",
+      "exposure_sha256": "94a78a75d5f31bd309f5699d18b2e976059554b746c14cb8c1e618115ab24e73",
+      "reused_clean_no_changes": false,
+      "totals": {
+        "eligible_edges": 6749,
+        "changed_edges": 2960,
+        "singleton_edges": 2108,
+        "unrewirable_edges": 0,
+        "unrewirable_strata": 0,
+        "max_changed_edges": 2960
+      },
+      "unchanged_queries": 0
+    },
+    "task_driver_s202": {
+      "auroc": 0.5626848192065583,
+      "predictions": "preds_task_driver_s202.npz",
+      "prediction_sha256": "9f53bd4de88b603b0fd7bc3e8e71254504b5181bff68f9d8aca2d5b6074c5ee5",
+      "exposure": "validation_exposure_task_driver_s202.npz",
+      "exposure_sha256": "798fa9da3dd6655c23afa81d241823aa0d0299f0f3d69de2e060b9ea0440c4d5",
+      "reused_clean_no_changes": false,
+      "totals": {
+        "eligible_edges": 6749,
+        "changed_edges": 2960,
+        "singleton_edges": 2108,
+        "unrewirable_edges": 0,
+        "unrewirable_strata": 0,
+        "max_changed_edges": 2960
+      },
+      "unchanged_queries": 0
+    },
+    "task_driver_s303": {
+      "auroc": 0.5642024105792222,
+      "predictions": "preds_task_driver_s303.npz",
+      "prediction_sha256": "909373f986c752022c89f7ea0c56bda194217db230215271ca10acda09ab3ee3",
+      "exposure": "validation_exposure_task_driver_s303.npz",
+      "exposure_sha256": "944ca52a0ef8c2ccbf0c6a5fd7b3aaf5ade2fe83ddcefc1e7e4789fb564b9e57",
+      "reused_clean_no_changes": false,
+      "totals": {
+        "eligible_edges": 6749,
+        "changed_edges": 2960,
+        "singleton_edges": 2108,
+        "unrewirable_edges": 0,
+        "unrewirable_strata": 0,
+        "max_changed_edges": 2960
+      },
+      "unchanged_queries": 0
+    },
+    "database_all_s101": {
+      "auroc": 0.5696628116917972,
+      "predictions": "preds_database_all_s101.npz",
+      "prediction_sha256": "cf524f1138a674f3342166afd88a1910cecc3ba0d9be18a496e95fb47476be09",
+      "exposure": "validation_exposure_database_all_s101.npz",
+      "exposure_sha256": "8f858d21f0e8de69c3dc8650d171326e8c7e3843640fd53e803af917067f0e0b",
+      "reused_clean_no_changes": false,
+      "totals": {
+        "eligible_edges": 6749,
+        "changed_edges": 1172,
+        "singleton_edges": 2108,
+        "unrewirable_edges": 0,
+        "unrewirable_strata": 0,
+        "max_changed_edges": 1172
+      },
+      "unchanged_queries": 380
+    },
+    "database_all_s202": {
+      "auroc": 0.5729956570536281,
+      "predictions": "preds_database_all_s202.npz",
+      "prediction_sha256": "35a12594f18602af8a79bf89d2743ce88beb6eeb5e10706c18c9fa17e2f25d22",
+      "exposure": "validation_exposure_database_all_s202.npz",
+      "exposure_sha256": "3d3891ced016020d9b52e931a9c2e60eeea741e9d4afc0a1087b442dc2a2c08e",
+      "reused_clean_no_changes": false,
+      "totals": {
+        "eligible_edges": 6749,
+        "changed_edges": 1172,
+        "singleton_edges": 2108,
+        "unrewirable_edges": 0,
+        "unrewirable_strata": 0,
+        "max_changed_edges": 1172
+      },
+      "unchanged_queries": 380
+    },
+    "database_all_s303": {
+      "auroc": 0.5712340799297321,
+      "predictions": "preds_database_all_s303.npz",
+      "prediction_sha256": "0c93fb9780aed30a9a02e1d993d266ab3f5a7d2528403dad4a20e44e952e0298",
+      "exposure": "validation_exposure_database_all_s303.npz",
+      "exposure_sha256": "8f858d21f0e8de69c3dc8650d171326e8c7e3843640fd53e803af917067f0e0b",
+      "reused_clean_no_changes": false,
+      "totals": {
+        "eligible_edges": 6749,
+        "changed_edges": 1172,
+        "singleton_edges": 2108,
+        "unrewirable_edges": 0,
+        "unrewirable_strata": 0,
+        "max_changed_edges": 1172
+      },
+      "unchanged_queries": 380
+    },
+    "database_driver_s101": {
+      "auroc": 0.5688186209925341,
+      "predictions": "preds_database_driver_s101.npz",
+      "prediction_sha256": "99e82319031d1856edfa6da1ce86ff27057554fc154fcaa0fa198655509984e9",
+      "exposure": "validation_exposure_database_driver_s101.npz",
+      "exposure_sha256": "f233227014bf688816a6eed7fbadca4d3fa6140d40565d6afcd7798fd0e39195",
+      "reused_clean_no_changes": false,
+      "totals": {
+        "eligible_edges": 6749,
+        "changed_edges": 677,
+        "singleton_edges": 2108,
+        "unrewirable_edges": 0,
+        "unrewirable_strata": 0,
+        "max_changed_edges": 677
+      },
+      "unchanged_queries": 381
+    },
+    "database_driver_s202": {
+      "auroc": 0.571917240033182,
+      "predictions": "preds_database_driver_s202.npz",
+      "prediction_sha256": "66edcb3b3e5061acfec5c2f1a5de999ac19decc49c23b2d4bd7af57345df5818",
+      "exposure": "validation_exposure_database_driver_s202.npz",
+      "exposure_sha256": "f233227014bf688816a6eed7fbadca4d3fa6140d40565d6afcd7798fd0e39195",
+      "reused_clean_no_changes": false,
+      "totals": {
+        "eligible_edges": 6749,
+        "changed_edges": 677,
+        "singleton_edges": 2108,
+        "unrewirable_edges": 0,
+        "unrewirable_strata": 0,
+        "max_changed_edges": 677
+      },
+      "unchanged_queries": 381
+    },
+    "database_driver_s303": {
+      "auroc": 0.5709803347484507,
+      "predictions": "preds_database_driver_s303.npz",
+      "prediction_sha256": "a016c2f5184c58522d59364e71401dcdf3b8d47eaed30eace86b45b73d90b2ab",
+      "exposure": "validation_exposure_database_driver_s303.npz",
+      "exposure_sha256": "f233227014bf688816a6eed7fbadca4d3fa6140d40565d6afcd7798fd0e39195",
+      "reused_clean_no_changes": false,
+      "totals": {
+        "eligible_edges": 6749,
+        "changed_edges": 677,
+        "singleton_edges": 2108,
+        "unrewirable_edges": 0,
+        "unrewirable_strata": 0,
+        "max_changed_edges": 677
+      },
+      "unchanged_queries": 381
+    },
+    "database_constructor_s101": {
+      "auroc": 0.5614453715902992,
+      "predictions": "preds_database_constructor_s101.npz",
+      "prediction_sha256": "69d8a71faef366ce0f99ca5001f105a744f102df695ec3c61f6b0b5460f5298b",
+      "exposure": "validation_exposure_database_constructor_s101.npz",
+      "exposure_sha256": "5268409af70c72efcc627837bef94efbbcb19f2f447aa55aa578e090ff071cdd",
+      "reused_clean_no_changes": false,
+      "totals": {
+        "eligible_edges": 6749,
+        "changed_edges": 222,
+        "singleton_edges": 2108,
+        "unrewirable_edges": 0,
+        "unrewirable_strata": 0,
+        "max_changed_edges": 222
+      },
+      "unchanged_queries": 591
+    },
+    "database_constructor_s202": {
+      "auroc": 0.5614453715902992,
+      "predictions": "preds_database_constructor_s202.npz",
+      "prediction_sha256": "1b916590fff1f644e026f3bd26b35d46c611ed998f3cad4b30875b400abb734a",
+      "exposure": "validation_exposure_database_constructor_s202.npz",
+      "exposure_sha256": "5268409af70c72efcc627837bef94efbbcb19f2f447aa55aa578e090ff071cdd",
+      "reused_clean_no_changes": false,
+      "totals": {
+        "eligible_edges": 6749,
+        "changed_edges": 222,
+        "singleton_edges": 2108,
+        "unrewirable_edges": 0,
+        "unrewirable_strata": 0,
+        "max_changed_edges": 222
+      },
+      "unchanged_queries": 591
+    },
+    "database_constructor_s303": {
+      "auroc": 0.5614453715902992,
+      "predictions": "preds_database_constructor_s303.npz",
+      "prediction_sha256": "1b916590fff1f644e026f3bd26b35d46c611ed998f3cad4b30875b400abb734a",
+      "exposure": "validation_exposure_database_constructor_s303.npz",
+      "exposure_sha256": "5268409af70c72efcc627837bef94efbbcb19f2f447aa55aa578e090ff071cdd",
+      "reused_clean_no_changes": false,
+      "totals": {
+        "eligible_edges": 6749,
+        "changed_edges": 222,
+        "singleton_edges": 2108,
+        "unrewirable_edges": 0,
+        "unrewirable_strata": 0,
+        "max_changed_edges": 222
+      },
+      "unchanged_queries": 591
+    },
+    "database_race_s101": {
+      "auroc": 0.5598789830673888,
+      "predictions": "preds_database_race_s101.npz",
+      "prediction_sha256": "2f3440f2f6020c49babd74f2402ffdd48ebd85c0fb8c5f72571c66acefa182e7",
+      "exposure": "validation_exposure_database_race_s101.npz",
+      "exposure_sha256": "a8cffeb20ab2bd8792622233fd44fb6ccee738c0dcd038a70a7968d37a0c7472",
+      "reused_clean_no_changes": false,
+      "totals": {
+        "eligible_edges": 6749,
+        "changed_edges": 273,
+        "singleton_edges": 2108,
+        "unrewirable_edges": 0,
+        "unrewirable_strata": 0,
+        "max_changed_edges": 273
+      },
+      "unchanged_queries": 567
+    },
+    "database_race_s202": {
+      "auroc": 0.560040013663202,
+      "predictions": "preds_database_race_s202.npz",
+      "prediction_sha256": "a930f17c56aacd0bc32859810f41933d29f23b91c1676396720c13e90c77e4af",
+      "exposure": "validation_exposure_database_race_s202.npz",
+      "exposure_sha256": "07b2989f253d949e9f08fb6912ce46144f86a37ecbf618bbb87dee5e8b81c8f2",
+      "reused_clean_no_changes": false,
+      "totals": {
+        "eligible_edges": 6749,
+        "changed_edges": 273,
+        "singleton_edges": 2108,
+        "unrewirable_edges": 0,
+        "unrewirable_strata": 0,
+        "max_changed_edges": 273
+      },
+      "unchanged_queries": 567
+    },
+    "database_race_s303": {
+      "auroc": 0.560040013663202,
+      "predictions": "preds_database_race_s303.npz",
+      "prediction_sha256": "2c32b6f58a0a2eee5f64a89c8be80479c6d90caa8ad59d12c40899a62d540549",
+      "exposure": "validation_exposure_database_race_s303.npz",
+      "exposure_sha256": "a8cffeb20ab2bd8792622233fd44fb6ccee738c0dcd038a70a7968d37a0c7472",
+      "reused_clean_no_changes": false,
+      "totals": {
+        "eligible_edges": 6749,
+        "changed_edges": 273,
+        "singleton_edges": 2108,
+        "unrewirable_edges": 0,
+        "unrewirable_strata": 0,
+        "max_changed_edges": 273
+      },
+      "unchanged_queries": 567
+    },
+    "race_circuit_s101": {
+      "auroc": 0.5613087395696091,
+      "predictions": "preds_race_circuit_s101.npz",
+      "prediction_sha256": "c0a469d11bdea3cb737d2c2479ddf4c5798d33e4e0de263278fffa93d96298dd",
+      "exposure": "validation_exposure_race_circuit_s101.npz",
+      "exposure_sha256": "8070cca42158932ad2562e655be810ca5530e8c91b415df10431447687c1b66f",
+      "reused_clean_no_changes": true,
+      "totals": {
+        "eligible_edges": 6749,
+        "changed_edges": 0,
+        "singleton_edges": 2108,
+        "unrewirable_edges": 0,
+        "unrewirable_strata": 0,
+        "max_changed_edges": 0
+      },
+      "unchanged_queries": 702
+    },
+    "race_circuit_s202": {
+      "auroc": 0.5613087395696091,
+      "predictions": "preds_race_circuit_s202.npz",
+      "prediction_sha256": "c0a469d11bdea3cb737d2c2479ddf4c5798d33e4e0de263278fffa93d96298dd",
+      "exposure": "validation_exposure_race_circuit_s202.npz",
+      "exposure_sha256": "8070cca42158932ad2562e655be810ca5530e8c91b415df10431447687c1b66f",
+      "reused_clean_no_changes": true,
+      "totals": {
+        "eligible_edges": 6749,
+        "changed_edges": 0,
+        "singleton_edges": 2108,
+        "unrewirable_edges": 0,
+        "unrewirable_strata": 0,
+        "max_changed_edges": 0
+      },
+      "unchanged_queries": 702
+    },
+    "race_circuit_s303": {
+      "auroc": 0.5613087395696091,
+      "predictions": "preds_race_circuit_s303.npz",
+      "prediction_sha256": "c0a469d11bdea3cb737d2c2479ddf4c5798d33e4e0de263278fffa93d96298dd",
+      "exposure": "validation_exposure_race_circuit_s303.npz",
+      "exposure_sha256": "8070cca42158932ad2562e655be810ca5530e8c91b415df10431447687c1b66f",
+      "reused_clean_no_changes": true,
+      "totals": {
+        "eligible_edges": 6749,
+        "changed_edges": 0,
+        "singleton_edges": 2108,
+        "unrewirable_edges": 0,
+        "unrewirable_strata": 0,
+        "max_changed_edges": 0
+      },
+      "unchanged_queries": 702
+    }
+  },
+  "reference_clean": {
+    "path": "preds_base.npz",
+    "bytes": 14798,
+    "sha256": "8106e63ad3cc30e49de4efb4a3d37b090c7607d687896a483e35ea8fc71e99a4"
+  },
+  "elapsed_sec": 386.84304022789,
+  "model_forward_attempts": 1320
+}

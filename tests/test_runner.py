@@ -341,3 +341,32 @@ def test_availability_filtered_matrix_replays_identical_exposure_in_microbatches
             assert exposure["availability_removed_future_tokens"].sum() == 1
             assert exposure["availability_removed_unmatured_label_tokens"].sum() == 702
             assert exposure["context_token_counts"][0] == 10
+
+
+def test_replication_task_uses_its_own_complete_split_and_metadata(runner, tmp_path):
+    from rfm_structure.analysis import analyze_matrix
+
+    write_metadata(tmp_path)
+    (tmp_path / "rel-f1/table_info.json").write_text(json.dumps({
+        "driver-top3:Test": {"num_nodes": 3, "node_idx_offset": 0},
+    }))
+    evaluators = {48: evaluator(48), 128: evaluator(128)}
+    for ev in evaluators.values():
+        original = ev.tasks[0]
+        task = original._replace(table_name="driver-top3")
+        loader = ev.eval_loaders[original]
+        loader.batches = [{key: value[:3].copy() for key, value in batch.items()} for batch in loader.batches]
+        loader.dataset.rustler_dataset.num_items = 3
+        ev.tasks = [task]
+        ev.eval_loaders = {task: loader}
+        ev.eval_loader_iters = {task: iter(loader)}
+    root = tmp_path / "replication"
+    result = runner["execute_matrix"](
+        evaluators, tmp_path, [101, 202, 303], [0, 0.5, 1], root,
+        dry_only=False, model_factory=FakeModel, inference_batch_size=2, expected_count=3,
+    )
+    assert result["task"] == "rel-f1/driver-top3"
+    analysis = analyze_matrix(root, allow_test_artifacts=True)
+    assert analysis["task"] == "rel-f1/driver-top3"
+    assert analysis["n_queries"] == 3
+    assert len(analysis["rows"]) == 14

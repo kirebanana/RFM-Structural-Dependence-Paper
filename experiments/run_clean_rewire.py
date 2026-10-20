@@ -1,7 +1,9 @@
-"""Validate and run the paired RT-PluRel corruption matrix on rel-f1/driver-dnf.
+"""Validate/run paired RT-PluRel incidence corruption on rel-f1 forecast tasks.
 
 No weights are loaded in --dry-run. Full runs validate every context/arm first,
 then require adequate resources and a local checkpoint: no implicit downloads.
+Driver-DNF is the original panel; --task driver-top3 is a same-database
+replication with its own metadata-defined target split, not a pooled experiment.
 """
 
 import argparse
@@ -40,6 +42,7 @@ from rfm_structure.validation import (
     real_query_batch,
     rewire_and_validate_batch,
     validate_batches,
+    visible_support_source_mask,
     write_exposure_npz,
 )
 
@@ -151,16 +154,23 @@ class BaseWrap:
 class RewireWrap(BaseWrap):
     """Only FK parents change; preserve evaluator phantom prediction shapes."""
 
-    def __init__(self, inner, seed, alpha, holder, inference_batch_size=None):
+    def __init__(self, inner, seed, alpha, holder, inference_batch_size=None, relation_ids=None, cycle_mode=None, source_selection=None):
         super().__init__(inner, holder, seed, inference_batch_size)
         self.alpha = alpha
+        self.relation_ids = relation_ids
+        self.cycle_mode = cycle_mode
+        if source_selection not in (None, "visible_labeled_support"):
+            raise ValueError("unknown source selection")
+        self.source_selection = source_selection
 
     def predict(self, batch, eval_ctx_sizes, device, task, bool_as_num):
         real, _ = real_query_batch({**batch, "batch_mask": self.holder.batch_mask})
         assert_held_fixed(self.holder.batch, real)
         if not np.array_equal(self.holder.batch["f2p_nbr_idxs"], real["f2p_nbr_idxs"]):
             raise ValueError("arm did not receive clean FK parents")
-        evidence = rewire_and_validate_batch(real, self.seed, self.alpha, getattr(self.holder, "availability_policy", None))
+        evidence = rewire_and_validate_batch(real, self.seed, self.alpha,
+                                            getattr(self.holder, "availability_policy", None), self.relation_ids, self.cycle_mode,
+                                            visible_support_source_mask(real) if self.source_selection else None)
         attach_availability(evidence["exposure"], getattr(self.holder, "availability_counts", None))
         self.record(evidence)
         full = numpy_batch({"nbr": batch["f2p_nbr_idxs"]})["nbr"]
@@ -174,16 +184,16 @@ class RewireWrap(BaseWrap):
         return self.predict_checked(model_input, evidence["batch"], eval_ctx_sizes, device, task, bool_as_num)
 
 
-def build_tasks(pre_dir):
+def build_tasks(pre_dir, task_table=TASK_TABLE):
     from rt.tasks import tasks_from_preprocessed
 
-    tasks = [task for task in tasks_from_preprocessed(pre_dir, splits=("test",), dbs=[DB_NAME]) if task.table_name == TASK_TABLE]
+    tasks = [task for task in tasks_from_preprocessed(pre_dir, splits=("test",), dbs=[DB_NAME]) if task.table_name == task_table]
     if len(tasks) != 1:
-        raise ValueError("expected exactly one driver-dnf test classification task")
+        raise ValueError(f"expected exactly one {task_table} test classification task")
     return tasks
 
 
-def dry_run(ev, pre_dir, seeds, out_dir, local_ctx, fractions=None, availability_policy=None):
+def dry_run(ev, pre_dir, seeds, out_dir, local_ctx, fractions=None, availability_policy=None, expected_count=ITEMS_PER_TASK):
     """Persist full coverage/evidence; exits 0 passed, 1 failed, 2 uncertain."""
     report_path = Path(out_dir) / "validation.json"
     report = {"status": "in_progress", "complete": False, "inference_ready": False,
@@ -192,11 +202,11 @@ def dry_run(ev, pre_dir, seeds, out_dir, local_ctx, fractions=None, availability
         json.dump(report, handle)
     started = time.time()
     try:
-        expected = load_expected_target_ids(pre_dir, ev.tasks[0], ITEMS_PER_TASK)
+        expected = load_expected_target_ids(pre_dir, ev.tasks[0], expected_count)
         relations = load_relation_index(pre_dir, DB_NAME)
         loader = configure_complete_evaluation(ev, len(expected))
         report, exposures = validate_batches(loader, expected, seeds, ev.ctx_sizes[0], fractions, availability_policy)
-        report.update(db_name=DB_NAME, task_table=TASK_TABLE, pre_dir=str(pre_dir), local_ctx=int(local_ctx),
+        report.update(db_name=DB_NAME, task_table=ev.tasks[0].table_name, pre_dir=str(pre_dir), local_ctx=int(local_ctx),
                       relation_index=relations, eval_bs=int(ev.eval_bs), scheduled_batches=len(loader.dataset),
                       evaluator_batch_cap=None, strength_rule=STRENGTH_RULE)
         if report["complete"]:
@@ -280,16 +290,16 @@ def load_frozen_model(checkpoint_dir, device):
 
 def run(ev, pre_dir, seeds, out_dir, device, local_ctx, *, fractions=(0.0, 0.5, 1.0),
          validation_report=None, checkpoint_dir=None, model_factory=None, provenance=None,
-         inference_batch_size=None):
+         inference_batch_size=None, expected_count=ITEMS_PER_TASK):
     """Technically gated inference; factory injection is only for lightweight tests."""
     out_dir = Path(out_dir)
     if validation_report is None:
-        rc = dry_run(ev, pre_dir, seeds, out_dir, local_ctx, fractions)
+        rc = dry_run(ev, pre_dir, seeds, out_dir, local_ctx, fractions, expected_count=expected_count)
         if rc:
             raise ValueError("inference blocked: validation failed or timestamps remain uncertain")
         validation_report = json.loads((out_dir / "validation.json").read_text())
     manifest_path = out_dir / "manifest.json"
-    manifest = {"status": "in_progress", "complete": False, "db_name": DB_NAME, "task_table": TASK_TABLE,
+    manifest = {"status": "in_progress", "complete": False, "db_name": DB_NAME, "task_table": ev.tasks[0].table_name,
                 "ctx": int(ev.ctx_sizes[0]), "local_ctx": int(local_ctx), "seeds": list(seeds),
                 "fractions": list(fractions), "checkpoint": CKPT, "validation": validation_report,
                 "relation_index": load_relation_index(pre_dir, DB_NAME), "strength_rule": STRENGTH_RULE,
@@ -315,7 +325,7 @@ def run(ev, pre_dir, seeds, out_dir, device, local_ctx, *, fractions=(0.0, 0.5, 
                 raise ValueError("validation strength/seed differs from inference")
             if alpha > 0 and checked["totals"]["changed_edges"] == 0:
                 raise ValueError(f"arm {name}: no realized corruption; inference would be uninformative")
-        configure_complete_evaluation(ev, ITEMS_PER_TASK)
+        configure_complete_evaluation(ev, expected_count)
         if model_factory:
             model = model_factory()
             manifest["checkpoint_provenance"] = {"test_only": True}
@@ -334,9 +344,9 @@ def run(ev, pre_dir, seeds, out_dir, device, local_ctx, *, fractions=(0.0, 0.5, 
         if len(outputs) != 1:
             raise ValueError("expected one task/context output")
         _, _, labels, preds, _, ids = outputs[0]
-        expected = load_expected_target_ids(pre_dir, ev.tasks[0], ITEMS_PER_TASK)
-        if len(ids) != ITEMS_PER_TASK or not np.array_equal(np.sort(ids), expected):
-            raise ValueError("predictions do not cover exactly the 702 intended targets")
+        expected = load_expected_target_ids(pre_dir, ev.tasks[0], expected_count)
+        if len(ids) != expected_count or not np.array_equal(np.sort(ids), expected):
+            raise ValueError(f"predictions do not cover exactly the {expected_count} intended targets")
         if not np.array_equal(ids, validation_report["target_node_idxs"]) or not np.array_equal(labels, validation_report["labels"]):
             raise ValueError("prediction target/label order differs from validated data")
         if holder.batch_index != len(holder.fingerprints):
@@ -344,7 +354,7 @@ def run(ev, pre_dir, seeds, out_dir, device, local_ctx, *, fractions=(0.0, 0.5, 
         manifest["arms"] = {}
         for (name, alpha, seed), (_, wrapper) in zip(arms, wrappers, strict=True):
             scores = np.asarray(preds[name], dtype=float)
-            if scores.shape != (ITEMS_PER_TASK,) or not np.all(np.isfinite(scores)):
+            if scores.shape != (expected_count,) or not np.all(np.isfinite(scores)):
                 raise ValueError(f"arm {name}: invalid raw scores")
             exposure_path = out_dir / f"exposure_{name}.npz"
             exposure = write_exposure_npz(exposure_path, wrapper.exposure_batches)
@@ -381,12 +391,13 @@ def run(ev, pre_dir, seeds, out_dir, device, local_ctx, *, fractions=(0.0, 0.5, 
 
 def execute_matrix(evaluators, pre_dir, seeds, fractions, out_dir, *, dry_only=True,
                     checkpoint_dir=None, device="cuda", model_factory=None, provenance=None,
-                    inference_batch_size=None, availability_policy=None):
+                    inference_batch_size=None, availability_policy=None, expected_count=ITEMS_PER_TASK):
     """Validate every context before any weight load or model forward."""
     root = Path(out_dir)
     root.mkdir(parents=True, exist_ok=False)
     status = {"status": "in_progress", "complete": False, "contexts": {}, "inference_ran": False,
-              "task": f"{DB_NAME}/{TASK_TABLE}", "seeds": list(seeds), "fractions": list(fractions),
+              "task": f"{DB_NAME}/{next(iter(evaluators.values())).tasks[0].table_name}",
+              "expected_queries": expected_count, "seeds": list(seeds), "fractions": list(fractions),
              "provenance": provenance or {}, "availability_policy": availability_policy,
              "evidence_kind": "synthetic_test" if model_factory else "validation_only" if dry_only else "real"}
     save_json(root / "matrix.json", status)
@@ -395,7 +406,7 @@ def execute_matrix(evaluators, pre_dir, seeds, fractions, out_dir, *, dry_only=T
         for ctx, ev in evaluators.items():
             directory = root / f"ctx{ctx}_lctx{ctx // 2}"
             directory.mkdir()
-            dry_run(ev, pre_dir, seeds, directory, ctx // 2, fractions, availability_policy)
+            dry_run(ev, pre_dir, seeds, directory, ctx // 2, fractions, availability_policy, expected_count)
             report = json.loads((directory / "validation.json").read_text())
             validated[ctx] = report
             status["contexts"][str(ctx)] = report["status"]
@@ -415,7 +426,7 @@ def execute_matrix(evaluators, pre_dir, seeds, fractions, out_dir, *, dry_only=T
             directory = root / f"ctx{ctx}_lctx{ctx // 2}"
             run(ev, pre_dir, seeds, directory, device, ctx // 2, fractions=fractions,
                 validation_report=validated[ctx], checkpoint_dir=checkpoint_dir, model_factory=model_factory,
-                provenance=provenance, inference_batch_size=inference_batch_size)
+                provenance=provenance, inference_batch_size=inference_batch_size, expected_count=expected_count)
         status.update(status="complete", complete=True)
         return status
     except Exception as error:
@@ -441,6 +452,7 @@ def main():
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--pre-dir", required=True)
     parser.add_argument("--checkpoint-dir")
+    parser.add_argument("--task", choices=("driver-dnf", "driver-top3"), default=TASK_TABLE)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--inference-batch-size", type=int, default=8,
                         help="real queries per model forward; does not change sampled contexts or matching")
@@ -475,7 +487,9 @@ def main():
                       "bfs_width": 32, "num_walks": 10000, "walk_length": 20, "prefer_latest": True}}
         from rt.eval_utils import build_evaluator
 
-        tasks = build_tasks(str(pre_dir))
+        tasks = build_tasks(str(pre_dir), args.task)
+        table_info = json.loads((pre_dir / DB_NAME / "table_info.json").read_text())
+        expected_count = int(table_info[f"{args.task}:Test"]["num_nodes"])
         availability_policy = load_availability_policy(pre_dir)
         device = "cpu"
         if not args.dry_run:
@@ -484,10 +498,11 @@ def main():
             device = ("cuda" if torch.cuda.is_available() else "cpu") if args.device == "auto" else args.device
         evaluators = {ctx: build_evaluator(tasks, str(pre_dir), embedding_model="all-MiniLM-L12-v2", d_text=384,
                        device=device, ctx_size=ctx, local_ctx_size=ctx // 2,
-                       items_per_task=ITEMS_PER_TASK, num_workers=0, shuffle_seed=0, context_seed=0) for ctx in contexts}
+                       items_per_task=expected_count, num_workers=0, shuffle_seed=0, context_seed=0) for ctx in contexts}
         status = execute_matrix(evaluators, pre_dir, seeds, fractions, root, dry_only=args.dry_run,
                                 checkpoint_dir=args.checkpoint_dir, provenance=provenance, device=device,
-                                inference_batch_size=args.inference_batch_size, availability_policy=availability_policy)
+                                inference_batch_size=args.inference_batch_size, availability_policy=availability_policy,
+                                expected_count=expected_count)
         print(f"[{status['status']}] {root}")
         return 0 if status["complete"] else 2 if status["status"] == "temporal_uncertainty" else 1
     except Exception as error:  # noqa: BLE001 -- persist setup errors without loading weights

@@ -347,7 +347,29 @@ def capture_evaluator_masks(ev, holder):
         ev.eval_loader_iters[task] = iter(captured)
 
 
-def rewire_and_validate_batch(base, seed, alpha=1.0, availability_policy=None):
+def visible_support_source_mask(base):
+    """Select non-query rows with an actually visible target-label cell.
+
+    Visibility is measured after the common availability mask: the label cell
+    must be retained, unmasked as a prediction target, and in the query's target
+    column. Select all cells of each such source row, not just its label cell.
+    """
+    nodes = base["node_idxs"]
+    targets = base["is_targets"] & ~base["is_padding"]
+    if not np.all(targets.sum(axis=1) == 1):
+        raise ValueError("visible support selection requires one query target")
+    result = np.zeros_like(base["is_padding"])
+    for b in range(len(nodes)):
+        target_s = int(np.flatnonzero(targets[b])[0])
+        query = nodes[b, target_s]
+        label = (~base["is_padding"][b] & ~base["is_targets"][b] & base["is_task_nodes"][b]
+                 & (base["col_name_idxs"][b] == base["col_name_idxs"][b, target_s])
+                 & (nodes[b] != query) & np.isfinite(base["number_values"][b].squeeze(-1)))
+        result[b] = np.isin(nodes[b], nodes[b, label])
+    return result
+
+
+def rewire_and_validate_batch(base, seed, alpha=1.0, availability_policy=None, relation_ids=None, cycle_mode=None, source_mask=None):
     """Apply maximum rewiring and inspect a real-row batch at one shared seam.
 
     Return structural/temporal errors alongside exposure rather than losing
@@ -361,11 +383,23 @@ def rewire_and_validate_batch(base, seed, alpha=1.0, availability_policy=None):
     arm["f2p_nbr_idxs"] = rewire_f2p_nbr(
         base["f2p_nbr_idxs"], base["f2p_rel_idxs"], base["node_idxs"],
         base["is_padding"], seed, stats=totals, sequence_stats=sequence_stats, alpha=alpha,
+        relation_ids=relation_ids,
+        cycle_mode=cycle_mode,
+        query_node_ids=(base["node_idxs"] * base["is_targets"]).sum(axis=1, dtype=np.int64),
+        source_mask=source_mask,
     )
     assert_held_fixed(cap, base)
     if not np.array_equal(cap["f2p_nbr_idxs"], base["f2p_nbr_idxs"]):
         raise ValueError("rewiring mutated the clean parent input")
     assert_held_fixed(cap, arm)
+    if relation_ids is not None:
+        outside = ~np.isin(base["f2p_rel_idxs"], list(relation_ids))
+        if not np.array_equal(cap["f2p_nbr_idxs"][outside], arm["f2p_nbr_idxs"][outside]):
+            raise ValueError("non-targeted FK relation changed")
+    if source_mask is not None:
+        outside = np.broadcast_to(~source_mask[..., None], cap["f2p_nbr_idxs"].shape)
+        if not np.array_equal(cap["f2p_nbr_idxs"][outside], arm["f2p_nbr_idxs"][outside]):
+            raise ValueError("non-selected source-row FK changed")
     temporal = {}
     for name, batch in (("base", cap), ("rewired", arm)):
         temporal[name] = summarize_temporal_status(
